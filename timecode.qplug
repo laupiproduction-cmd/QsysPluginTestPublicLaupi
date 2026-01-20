@@ -59,6 +59,11 @@ function GetProperties()
             Name = "DropFrame",
             Type = "boolean",
             Value = false
+        },
+        {
+            Name = "Audio Player Name",
+            Type = "string",
+            Value = ""
         }
     }
     return props
@@ -351,6 +356,14 @@ end
 function GetPins(props)
     local pins = {}
     table.insert(pins, {
+        Name = "Audio Input 1",
+        Direction = "input"
+    })
+    table.insert(pins, {
+        Name = "Audio Input 2",
+        Direction = "input"
+    })
+    table.insert(pins, {
         Name = "Audio Output 1",
         Direction = "output"
     })
@@ -364,16 +377,22 @@ end
 function GetComponents(props)
     local components = {}
     table.insert(components, {
-        Name = "audio_player",
-        Type = "audio_player"
+        Name = "audio_mixer",
+        Type = "mixer",
+        Properties = {
+            ["n_inputs"] = 2,
+            ["n_outputs"] = 2
+        }
     })
     return components
 end
 
 function GetWiring(props)
     local wiring = {}
-    table.insert(wiring, {"audio_player Output 1", "Audio Output 1"})
-    table.insert(wiring, {"audio_player Output 2", "Audio Output 2"})
+    table.insert(wiring, {"Audio Input 1", "audio_mixer Input 1"})
+    table.insert(wiring, {"Audio Input 2", "audio_mixer Input 2"})
+    table.insert(wiring, {"audio_mixer Output 1", "Audio Output 1"})
+    table.insert(wiring, {"audio_mixer Output 2", "Audio Output 2"})
     return wiring
 end
 
@@ -441,11 +460,26 @@ local function getActualFrameRate()
     return framesPerSecond
 end
 
-local function getAudioPlayer()
+local function getExternalAudioPlayer()
+    if not Component or not Component.New then
+        return nil
+    end
+    local playerName = Properties["Audio Player Name"].Value
+    if playerName == nil or playerName == "" then
+        return nil
+    end
+    local ok, component = pcall(Component.New, playerName)
+    if ok then
+        return component
+    end
+    return nil
+end
+
+local function getAudioMixer()
     if not Components then
         return nil
     end
-    return Components.audio_player or Components["audio_player"]
+    return Components.audio_mixer or Components["audio_mixer"]
 end
 
 local function setComponentString(component, name, value)
@@ -498,8 +532,52 @@ local function triggerComponent(component, name)
     end)
 end
 
+local function setMixerGainMute(gainDb, muted)
+    local mixer = getAudioMixer()
+    if not mixer or not mixer.Controls then
+        return
+    end
+    local gainNames = {"Input 1 Gain", "Input1 Gain"}
+    local gainNames2 = {"Input 2 Gain", "Input2 Gain"}
+    local muteNames = {"Input 1 Mute", "Input1 Mute"}
+    local muteNames2 = {"Input 2 Mute", "Input2 Mute"}
+
+    for _, name in ipairs(gainNames) do
+        if mixer.Controls[name] then
+            pcall(function()
+                mixer.Controls[name].Value = gainDb
+            end)
+            break
+        end
+    end
+    for _, name in ipairs(gainNames2) do
+        if mixer.Controls[name] then
+            pcall(function()
+                mixer.Controls[name].Value = gainDb
+            end)
+            break
+        end
+    end
+    for _, name in ipairs(muteNames) do
+        if mixer.Controls[name] then
+            pcall(function()
+                mixer.Controls[name].Boolean = muted
+            end)
+            break
+        end
+    end
+    for _, name in ipairs(muteNames2) do
+        if mixer.Controls[name] then
+            pcall(function()
+                mixer.Controls[name].Boolean = muted
+            end)
+            break
+        end
+    end
+end
+
 local function syncAudioToTimecode()
-    local player = getAudioPlayer()
+    local player = getExternalAudioPlayer()
     if not player then
         return
     end
@@ -540,19 +618,19 @@ local function applyDropFrame(newValue)
 end
 
 local function applyAudioSettings()
-    local player = getAudioPlayer()
-    if not player then
-        return
+    local player = getExternalAudioPlayer()
+    if player then
+        setComponentString(player, "Root", Controls.Root.String)
+        setComponentString(player, "Directory", Controls.Directory.String)
+        setComponentString(player, "File", Controls.File.String)
+        setComponentNumber(player, "Gain", Controls.Gain.Value)
+        setComponentBoolean(player, "Mute", Controls.Mute.Boolean)
     end
-    setComponentString(player, "Root", Controls.Root.String)
-    setComponentString(player, "Directory", Controls.Directory.String)
-    setComponentString(player, "File", Controls.File.String)
-    setComponentNumber(player, "Gain", Controls.Gain.Value)
-    setComponentBoolean(player, "Mute", Controls.Mute.Boolean)
+    setMixerGainMute(Controls.Gain.Value, Controls.Mute.Boolean)
 end
 
 local function setAudioPlayState(isPlaying)
-    local player = getAudioPlayer()
+    local player = getExternalAudioPlayer()
     if not player then
         return
     end
@@ -610,29 +688,31 @@ if Controls then
     end
 
     Controls.Root.EventHandler = function(ctrl)
-        local player = getAudioPlayer()
+        local player = getExternalAudioPlayer()
         setComponentString(player, "Root", ctrl.String)
     end
 
     Controls.Directory.EventHandler = function(ctrl)
-        local player = getAudioPlayer()
+        local player = getExternalAudioPlayer()
         setComponentString(player, "Directory", ctrl.String)
     end
 
     Controls.File.EventHandler = function(ctrl)
-        local player = getAudioPlayer()
+        local player = getExternalAudioPlayer()
         setComponentString(player, "File", ctrl.String)
         syncAudioToTimecode()
     end
 
     Controls.Gain.EventHandler = function(ctrl)
-        local player = getAudioPlayer()
+        local player = getExternalAudioPlayer()
         setComponentNumber(player, "Gain", ctrl.Value)
+        setMixerGainMute(ctrl.Value, Controls.Mute.Boolean)
     end
 
     Controls.Mute.EventHandler = function(ctrl)
-        local player = getAudioPlayer()
+        local player = getExternalAudioPlayer()
         setComponentBoolean(player, "Mute", ctrl.Boolean)
+        setMixerGainMute(Controls.Gain.Value, ctrl.Boolean)
     end
 
     Properties.FrameRate.EventHandler = function()
