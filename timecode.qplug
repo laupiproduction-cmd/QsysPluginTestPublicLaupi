@@ -1,0 +1,265 @@
+-- Plugin for Q-Sys
+-- Built in Lua
+-- Simple timecode generator with transport controls
+
+PluginInfo = {
+    Name = "Q-Sys Community~Timecode Transport (1.0.0)",
+    Version = "1.0.0",
+    Id = "q-sys.community.timecode-transport.1.0.0",
+    Description = "Simple timecode generator with play/stop and skip controls.",
+    ShowDebug = false,
+    Author = "Solo Works London"
+}
+
+local Colors = {
+    White = {255, 255, 255},
+    Black = {0, 0, 0},
+    Red = {255, 0, 0},
+    Green = {0, 255, 0}
+}
+
+function GetProperties()
+    local props = {
+        {
+            Name = "FrameRate",
+            Type = "integer",
+            Min = 1,
+            Max = 60,
+            Value = 30
+        }
+    }
+    return props
+end
+
+function RectifyProperties(props)
+    return props
+end
+
+function GetControls(props)
+    local ctls = {
+        {
+            Name = "Play",
+            ControlType = "Button",
+            ButtonType = "Toggle",
+            PinStyle = "Input",
+            UserPin = true
+        },
+        {
+            Name = "Stop",
+            ControlType = "Button",
+            ButtonType = "Trigger",
+            PinStyle = "Input",
+            UserPin = true
+        },
+        {
+            Name = "SkipBack30",
+            ControlType = "Button",
+            ButtonType = "Trigger",
+            PinStyle = "Input",
+            UserPin = true
+        },
+        {
+            Name = "SkipForward30",
+            ControlType = "Button",
+            ButtonType = "Trigger",
+            PinStyle = "Input",
+            UserPin = true
+        },
+        {
+            Name = "TimecodeDisplay",
+            ControlType = "Indicator",
+            IndicatorType = "Text",
+            PinStyle = "Output",
+            UserPin = true
+        },
+        {
+            Name = "TimecodeOut",
+            ControlType = "Indicator",
+            IndicatorType = "Text",
+            PinStyle = "Output",
+            UserPin = true
+        }
+    }
+    return ctls
+end
+
+local pagenames = {"Display"}
+
+function GetPages(props)
+    local pages = {}
+    table.insert(pages, {name = pagenames[1]})
+    return pages
+end
+
+function GetControlLayout(props)
+    local layout = {}
+    local graphics = {}
+    local x, y = 0, 0
+
+    table.insert(
+        graphics,
+        {
+            Type = "GroupBox",
+            Text = "Timecode Transport",
+            HTextAlign = "Left",
+            Fill = Colors.White,
+            CornerRadius = 8,
+            StrokeColor = Colors.Black,
+            StrokeWidth = 1,
+            Position = {x, y},
+            Size = {260, 140}
+        }
+    )
+
+    table.insert(
+        graphics,
+        {
+            Type = "Text",
+            Text = "Timecode (HH:MM:SS:FF)",
+            Font = "Roboto",
+            FontSize = 12,
+            FontStyle = "Bold",
+            HTextAlign = "Left",
+            Color = Colors.Black,
+            Position = {x + 10, y + 20},
+            Size = {200, 18}
+        }
+    )
+
+    table.insert(
+        layout,
+        {
+            Type = "Control",
+            Name = "TimecodeDisplay",
+            Position = {x + 10, y + 40},
+            Size = {240, 24}
+        }
+    )
+
+    table.insert(
+        layout,
+        {
+            Type = "Control",
+            Name = "Play",
+            Position = {x + 10, y + 75},
+            Size = {60, 24}
+        }
+    )
+
+    table.insert(
+        layout,
+        {
+            Type = "Control",
+            Name = "Stop",
+            Position = {x + 80, y + 75},
+            Size = {60, 24}
+        }
+    )
+
+    table.insert(
+        layout,
+        {
+            Type = "Control",
+            Name = "SkipBack30",
+            Position = {x + 150, y + 75},
+            Size = {40, 24}
+        }
+    )
+
+    table.insert(
+        layout,
+        {
+            Type = "Control",
+            Name = "SkipForward30",
+            Position = {x + 200, y + 75},
+            Size = {50, 24}
+        }
+    )
+
+    return layout, graphics
+end
+
+local totalFrames = 0
+local framesPerSecond = 30
+local running = false
+local tickTimer = nil
+
+local function clampFrames(value)
+    if value < 0 then
+        return 0
+    end
+    return value
+end
+
+local function formatTimecode(frames, fps)
+    local fpsValue = math.max(1, fps)
+    local framesPerHour = fpsValue * 3600
+    local framesPerMinute = fpsValue * 60
+
+    local hours = math.floor(frames / framesPerHour) % 24
+    local minutes = math.floor((frames % framesPerHour) / framesPerMinute)
+    local seconds = math.floor((frames % framesPerMinute) / fpsValue)
+    local frame = frames % fpsValue
+
+    return string.format("%02d:%02d:%02d:%02d", hours, minutes, seconds, frame)
+end
+
+local function pushTimecode()
+    local tc = formatTimecode(totalFrames, framesPerSecond)
+    Controls.TimecodeDisplay.String = tc
+    Controls.TimecodeOut.String = tc
+end
+
+local function startTimer()
+    if tickTimer then
+        tickTimer:Stop()
+    end
+    tickTimer = Timer.New()
+    tickTimer.EventHandler = function()
+        if running then
+            totalFrames = totalFrames + 1
+            pushTimecode()
+        end
+    end
+    tickTimer:Start(1 / framesPerSecond)
+end
+
+local function applyFrameRate(newRate)
+    framesPerSecond = math.max(1, math.floor(newRate))
+    startTimer()
+    pushTimecode()
+end
+
+if Controls then
+    applyFrameRate(Properties.FrameRate.Value)
+
+    Controls.Play.EventHandler = function(ctrl)
+        running = ctrl.Boolean
+        if running then
+            startTimer()
+        end
+    end
+
+    Controls.Stop.EventHandler = function()
+        running = false
+        totalFrames = 0
+        Controls.Play.Boolean = false
+        pushTimecode()
+    end
+
+    Controls.SkipBack30.EventHandler = function()
+        totalFrames = clampFrames(totalFrames - (framesPerSecond * 30))
+        pushTimecode()
+    end
+
+    Controls.SkipForward30.EventHandler = function()
+        totalFrames = totalFrames + (framesPerSecond * 30)
+        pushTimecode()
+    end
+
+    Properties.FrameRate.EventHandler = function()
+        applyFrameRate(Properties.FrameRate.Value)
+    end
+
+    pushTimecode()
+end
