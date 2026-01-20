@@ -33,6 +33,19 @@ local function convertColor(hex)
     return t
 end
 
+local function setButtonLabel(control, label)
+    if not control then
+        return
+    end
+    if not pcall(function()
+        control.String = label
+    end) then
+        pcall(function()
+            control.Legend = label
+        end)
+    end
+end
+
 function GetProperties()
     local props = {
         {
@@ -127,28 +140,28 @@ function GetControlLayout(props)
     }
 
     layout["Play"] = {
-        PrettyName = "Play",
+        PrettyName = "PLAY",
         Position = {10, 70},
         Size = {60, 24},
         Style = "ToggleButton"
     }
 
     layout["Stop"] = {
-        PrettyName = "Stop",
+        PrettyName = "STOP",
         Position = {80, 70},
         Size = {60, 24},
         Style = "Button"
     }
 
     layout["SkipBack30"] = {
-        PrettyName = "-30s",
+        PrettyName = "-30",
         Position = {150, 70},
         Size = {45, 24},
         Style = "Button"
     }
 
     layout["SkipForward30"] = {
-        PrettyName = "+30s",
+        PrettyName = "+30",
         Position = {205, 70},
         Size = {45, 24},
         Style = "Button"
@@ -240,20 +253,31 @@ local function applyFrameRate(newRate)
     pushTimecode()
 end
 
+local function updatePlayLabel()
+    local label = running and "PAUSE" or "PLAY"
+    setButtonLabel(Controls.Play, label)
+end
+
 if Controls then
     applyFrameRate(Properties.FrameRate.Value)
+    setButtonLabel(Controls.Stop, "STOP")
+    setButtonLabel(Controls.SkipBack30, "-30")
+    setButtonLabel(Controls.SkipForward30, "+30")
+    updatePlayLabel()
 
     Controls.Play.EventHandler = function(ctrl)
         running = ctrl.Boolean
         if running then
             startTimer()
         end
+        updatePlayLabel()
     end
 
     Controls.Stop.EventHandler = function()
         running = false
         totalFrames = 0
         Controls.Play.Boolean = false
+        updatePlayLabel()
         pushTimecode()
     end
 
