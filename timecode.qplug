@@ -130,6 +130,25 @@ function GetControls(props)
             PinStyle = "Output",
             Count = 1,
             UserPin = true
+        },
+        {
+            Name = "Gain",
+            ControlType = "Knob",
+            ControlUnit = "Float",
+            Min = -100,
+            Max = 25,
+            Value = 0,
+            PinStyle = "Input",
+            Count = 1,
+            UserPin = true
+        },
+        {
+            Name = "Mute",
+            ControlType = "Button",
+            ButtonType = "Toggle",
+            PinStyle = "Input",
+            Count = 1,
+            UserPin = true
         }
     }
     return ctls
@@ -177,6 +196,20 @@ function GetControlLayout(props)
         Style = "Button"
     }
 
+    layout["Gain"] = {
+        PrettyName = "Gain",
+        Position = {10, 100},
+        Size = {40, 40},
+        Style = "Knob"
+    }
+
+    layout["Mute"] = {
+        PrettyName = "MUTE",
+        Position = {70, 108},
+        Size = {60, 24},
+        Style = "ToggleButton"
+    }
+
     graphics = {
         {
             Type = "Label",
@@ -219,9 +252,25 @@ function GetControlLayout(props)
             HTextAlign = "Center"
         },
         {
+            Type = "Label",
+            Position = {10, 94},
+            Size = {60, 10},
+            Text = "GAIN (dB)",
+            TextSize = 9,
+            HTextAlign = "Left"
+        },
+        {
+            Type = "Label",
+            Position = {70, 98},
+            Size = {60, 10},
+            Text = "MUTE",
+            TextSize = 9,
+            HTextAlign = "Center"
+        },
+        {
             Type = "GroupBox",
             Position = {0, 0},
-            Size = {260, 110},
+            Size = {260, 170},
             Text = "Timecode Transport"
         }
     }
@@ -347,6 +396,32 @@ local function setComponentBoolean(component, name, value)
     end)
 end
 
+local function setFirstNumberControl(component, names, value)
+    if not component or not component.Controls then
+        return false
+    end
+    for _, name in ipairs(names) do
+        if component.Controls[name] then
+            setComponentNumber(component, name, value)
+            return true
+        end
+    end
+    return false
+end
+
+local function setFirstBooleanControl(component, names, value)
+    if not component or not component.Controls then
+        return false
+    end
+    for _, name in ipairs(names) do
+        if component.Controls[name] then
+            setComponentBoolean(component, name, value)
+            return true
+        end
+    end
+    return false
+end
+
 local function triggerComponent(component, name)
     if not component or not component.Controls or not component.Controls[name] then
         return
@@ -361,6 +436,30 @@ local function triggerComponent(component, name)
     pcall(function()
         ctl.Boolean = true
     end)
+end
+
+local function applyAudioGainMute()
+    local player = getExternalAudioPlayer()
+    if not player then
+        return
+    end
+    local gainNames = {
+        "Gain",
+        "Gain (dB)",
+        "Level",
+        "Level (dB)",
+        "Output Gain",
+        "Output Level",
+        "Volume",
+        "Trim"
+    }
+    local muteNames = {
+        "Mute",
+        "Muted",
+        "Output Mute"
+    }
+    setFirstNumberControl(player, gainNames, Controls.Gain.Value)
+    setFirstBooleanControl(player, muteNames, Controls.Mute.Boolean)
 end
 
 local function syncAudioToTimecode()
@@ -387,6 +486,7 @@ local function startTimer()
         if running then
             totalFrames = totalFrames + 1
             pushTimecode()
+            syncAudioToTimecode()
         end
     end
     tickTimer:Start(1 / getActualFrameRate())
@@ -432,7 +532,9 @@ if Controls then
     setButtonLabel(Controls.Stop, "STOP")
     setButtonLabel(Controls.SkipBack30, "-30")
     setButtonLabel(Controls.SkipForward30, "+30")
+    setButtonLabel(Controls.Mute, "MUTE")
     updatePlayLabel()
+    applyAudioGainMute()
 
     Controls.Play.EventHandler = function(ctrl)
         running = ctrl.Boolean
@@ -465,12 +567,25 @@ if Controls then
         pushTimecode()
     end
 
+    Controls.Gain.EventHandler = function()
+        applyAudioGainMute()
+    end
+
+    Controls.Mute.EventHandler = function()
+        applyAudioGainMute()
+    end
+
     Properties.FrameRate.EventHandler = function()
         applyFrameRate(Properties.FrameRate.Value)
     end
 
     Properties.DropFrame.EventHandler = function()
         applyDropFrame(Properties.DropFrame.Value)
+    end
+
+    Properties["Audio Player Name"].EventHandler = function()
+        applyAudioGainMute()
+        syncAudioToTimecode()
     end
 
     pushTimecode()
