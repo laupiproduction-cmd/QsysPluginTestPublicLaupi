@@ -18,6 +18,21 @@ local Colors = {
     Green = {0, 255, 0}
 }
 
+local function hexToDec(hex)
+    hex = string.upper(hex)
+    local b1 = string.byte(string.sub(hex, 1, 1))
+    local b2 = string.byte(string.sub(hex, 2, 2))
+    return (b1 <= 57 and b1 - 48 or b1 - 55) * 16 + (b2 <= 57 and b2 - 48 or b2 - 55)
+end
+
+local function convertColor(hex)
+    local t = {}
+    t[1] = hexToDec(string.sub(hex, 2, 3))
+    t[2] = hexToDec(string.sub(hex, 4, 5))
+    t[3] = hexToDec(string.sub(hex, 6, 7))
+    return t
+end
+
 function GetProperties()
     local props = {
         {
@@ -33,6 +48,14 @@ end
 
 function RectifyProperties(props)
     return props
+end
+
+function GetPrettyName(props)
+    return "Timecode Transport (" .. tostring(props.FrameRate.Value) .. " fps)"
+end
+
+function GetColor(props)
+    return convertColor("#cccccc")
 end
 
 function GetControls(props)
@@ -75,7 +98,7 @@ function GetControls(props)
             IndicatorType = "Text",
             PinStyle = "Output",
             Count = 1,
-            UserPin = true
+            UserPin = false
         },
         {
             Name = "TimecodeOut",
@@ -89,100 +112,81 @@ function GetControls(props)
     return ctls
 end
 
-local pagenames = {"Display"}
-
-function GetPages(props)
-    local pages = {}
-    table.insert(pages, {name = pagenames[1]})
-    return pages
-end
-
 function GetControlLayout(props)
     local layout = {}
     local graphics = {}
-    local x, y = 0, 0
 
-    table.insert(
-        graphics,
+    layout["TimecodeDisplay"] = {
+        PrettyName = "Timecode",
+        Position = {10, 30},
+        Size = {240, 24},
+        Style = "Text",
+        TextFontSize = 14,
+        WordWrap = false,
+        IsBold = true
+    }
+
+    layout["Play"] = {
+        PrettyName = "Play",
+        Position = {10, 70},
+        Size = {60, 24},
+        Style = "ToggleButton"
+    }
+
+    layout["Stop"] = {
+        PrettyName = "Stop",
+        Position = {80, 70},
+        Size = {60, 24},
+        Style = "Button"
+    }
+
+    layout["SkipBack30"] = {
+        PrettyName = "-30s",
+        Position = {150, 70},
+        Size = {45, 24},
+        Style = "Button"
+    }
+
+    layout["SkipForward30"] = {
+        PrettyName = "+30s",
+        Position = {205, 70},
+        Size = {45, 24},
+        Style = "Button"
+    }
+
+    graphics = {
+        {
+            Type = "Label",
+            Position = {10, 10},
+            Size = {240, 16},
+            Text = "Timecode (HH:MM:SS:FF)",
+            TextSize = 12,
+            HTextAlign = "Left"
+        },
         {
             Type = "GroupBox",
-            Text = "Timecode Transport",
-            HTextAlign = "Left",
-            Fill = Colors.White,
-            CornerRadius = 8,
-            StrokeColor = Colors.Black,
-            StrokeWidth = 1,
-            Position = {x, y},
-            Size = {260, 140}
+            Position = {0, 0},
+            Size = {260, 110},
+            Text = "Timecode Transport"
         }
-    )
-
-    table.insert(
-        graphics,
-        {
-            Type = "Text",
-            Text = "Timecode (HH:MM:SS:FF)",
-            Font = "Roboto",
-            FontSize = 12,
-            FontStyle = "Bold",
-            HTextAlign = "Left",
-            Color = Colors.Black,
-            Position = {x + 10, y + 20},
-            Size = {200, 18}
-        }
-    )
-
-    table.insert(
-        layout,
-        {
-            Type = "Control",
-            Name = "TimecodeDisplay",
-            Position = {x + 10, y + 40},
-            Size = {240, 24}
-        }
-    )
-
-    table.insert(
-        layout,
-        {
-            Type = "Control",
-            Name = "Play",
-            Position = {x + 10, y + 75},
-            Size = {60, 24}
-        }
-    )
-
-    table.insert(
-        layout,
-        {
-            Type = "Control",
-            Name = "Stop",
-            Position = {x + 80, y + 75},
-            Size = {60, 24}
-        }
-    )
-
-    table.insert(
-        layout,
-        {
-            Type = "Control",
-            Name = "SkipBack30",
-            Position = {x + 150, y + 75},
-            Size = {40, 24}
-        }
-    )
-
-    table.insert(
-        layout,
-        {
-            Type = "Control",
-            Name = "SkipForward30",
-            Position = {x + 200, y + 75},
-            Size = {50, 24}
-        }
-    )
+    }
 
     return layout, graphics
+end
+
+function GetPins(props)
+    local pins = {}
+    return pins
+end
+
+function GetComponents(props)
+    local components = {}
+    return components
+end
+
+function GetWiring(props)
+    local wiring = {}
+    return wiring
 end
 
 local totalFrames = 0
