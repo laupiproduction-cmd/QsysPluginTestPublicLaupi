@@ -54,6 +54,11 @@ function GetProperties()
             Min = 1,
             Max = 60,
             Value = 30
+        },
+        {
+            Name = "DropFrame",
+            Type = "boolean",
+            Value = false
         }
     }
     return props
@@ -177,6 +182,38 @@ function GetControlLayout(props)
             HTextAlign = "Left"
         },
         {
+            Type = "Label",
+            Position = {10, 56},
+            Size = {60, 12},
+            Text = "PLAY/PAUSE",
+            TextSize = 9,
+            HTextAlign = "Center"
+        },
+        {
+            Type = "Label",
+            Position = {80, 56},
+            Size = {60, 12},
+            Text = "STOP",
+            TextSize = 9,
+            HTextAlign = "Center"
+        },
+        {
+            Type = "Label",
+            Position = {150, 56},
+            Size = {45, 12},
+            Text = "-30",
+            TextSize = 9,
+            HTextAlign = "Center"
+        },
+        {
+            Type = "Label",
+            Position = {205, 56},
+            Size = {45, 12},
+            Text = "+30",
+            TextSize = 9,
+            HTextAlign = "Center"
+        },
+        {
             Type = "GroupBox",
             Position = {0, 0},
             Size = {260, 110},
@@ -204,6 +241,7 @@ end
 
 local totalFrames = 0
 local framesPerSecond = 30
+local dropFrameEnabled = false
 local running = false
 local tickTimer = nil
 
@@ -214,8 +252,33 @@ local function clampFrames(value)
     return value
 end
 
-local function formatTimecode(frames, fps)
+local function formatDropFrame(frames, fps)
+    local dropFrames = fps == 60 and 4 or 2
+    local framesPerHour = fps * 60 * 60
+    local framesPer24Hours = framesPerHour * 24
+    local framesPer10Minutes = fps * 60 * 10
+    local framesPerMinute = fps * 60
+
+    local frameNumber = frames % framesPer24Hours
+    local d = math.floor(frameNumber / framesPer10Minutes)
+    local m = frameNumber % framesPer10Minutes
+    local dropped = dropFrames * 9 * d
+        + dropFrames * math.floor(math.max(0, m - dropFrames) / (framesPerMinute - dropFrames))
+    frameNumber = frameNumber + dropped
+
+    local hours = math.floor(frameNumber / framesPerHour) % 24
+    local minutes = math.floor((frameNumber % framesPerHour) / framesPerMinute)
+    local seconds = math.floor((frameNumber % framesPerMinute) / fps)
+    local frame = frameNumber % fps
+
+    return string.format("%02d:%02d:%02d;%02d", hours, minutes, seconds, frame)
+end
+
+local function formatTimecode(frames, fps, dropFrame)
     local fpsValue = math.max(1, fps)
+    if dropFrame and (fpsValue == 30 or fpsValue == 60) then
+        return formatDropFrame(frames, fpsValue)
+    end
     local framesPerHour = fpsValue * 3600
     local framesPerMinute = fpsValue * 60
 
@@ -228,9 +291,16 @@ local function formatTimecode(frames, fps)
 end
 
 local function pushTimecode()
-    local tc = formatTimecode(totalFrames, framesPerSecond)
+    local tc = formatTimecode(totalFrames, framesPerSecond, dropFrameEnabled)
     Controls.TimecodeDisplay.String = tc
     Controls.TimecodeOut.String = tc
+end
+
+local function getActualFrameRate()
+    if dropFrameEnabled and (framesPerSecond == 30 or framesPerSecond == 60) then
+        return framesPerSecond * 1000 / 1001
+    end
+    return framesPerSecond
 end
 
 local function startTimer()
@@ -244,7 +314,7 @@ local function startTimer()
             pushTimecode()
         end
     end
-    tickTimer:Start(1 / framesPerSecond)
+    tickTimer:Start(1 / getActualFrameRate())
 end
 
 local function applyFrameRate(newRate)
@@ -258,8 +328,15 @@ local function updatePlayLabel()
     setButtonLabel(Controls.Play, label)
 end
 
+local function applyDropFrame(newValue)
+    dropFrameEnabled = newValue == true
+    startTimer()
+    pushTimecode()
+end
+
 if Controls then
     applyFrameRate(Properties.FrameRate.Value)
+    applyDropFrame(Properties.DropFrame.Value)
     setButtonLabel(Controls.Stop, "STOP")
     setButtonLabel(Controls.SkipBack30, "-30")
     setButtonLabel(Controls.SkipForward30, "+30")
@@ -293,6 +370,10 @@ if Controls then
 
     Properties.FrameRate.EventHandler = function()
         applyFrameRate(Properties.FrameRate.Value)
+    end
+
+    Properties.DropFrame.EventHandler = function()
+        applyDropFrame(Properties.DropFrame.Value)
     end
 
     pushTimecode()
