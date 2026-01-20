@@ -1,0 +1,592 @@
+-- Plugin for Q-Sys
+-- Built in Lua
+-- Simple timecode generator with transport controls
+
+PluginInfo = {
+    Name = "Q-Sys Community~Timecode Transport (1.0.0)",
+    Version = "1.0.0",
+    Id = "q-sys.community.timecode-transport.1.0.0",
+    Description = "Simple timecode generator with play/stop and skip controls.",
+    ShowDebug = false,
+    Author = "Solo Works London"
+}
+
+local Colors = {
+    White = {255, 255, 255},
+    Black = {0, 0, 0},
+    Red = {255, 0, 0},
+    Green = {0, 255, 0}
+}
+
+local function hexToDec(hex)
+    hex = string.upper(hex)
+    local b1 = string.byte(string.sub(hex, 1, 1))
+    local b2 = string.byte(string.sub(hex, 2, 2))
+    return (b1 <= 57 and b1 - 48 or b1 - 55) * 16 + (b2 <= 57 and b2 - 48 or b2 - 55)
+end
+
+local function convertColor(hex)
+    local t = {}
+    t[1] = hexToDec(string.sub(hex, 2, 3))
+    t[2] = hexToDec(string.sub(hex, 4, 5))
+    t[3] = hexToDec(string.sub(hex, 6, 7))
+    return t
+end
+
+local function setButtonLabel(control, label)
+    if not control then
+        return
+    end
+    if not pcall(function()
+        control.String = label
+    end) then
+        pcall(function()
+            control.Legend = label
+        end)
+    end
+end
+
+function GetProperties()
+    local props = {
+        {
+            Name = "FrameRate",
+            Type = "integer",
+            Min = 1,
+            Max = 60,
+            Value = 30
+        },
+        {
+            Name = "DropFrame",
+            Type = "boolean",
+            Value = false
+        },
+        {
+            Name = "Audio Player Name",
+            Type = "string",
+            Value = ""
+        }
+    }
+    return props
+end
+
+function RectifyProperties(props)
+    return props
+end
+
+function GetPrettyName(props)
+    return "Timecode Transport (" .. tostring(props.FrameRate.Value) .. " fps)"
+end
+
+function GetColor(props)
+    return convertColor("#cccccc")
+end
+
+function GetControls(props)
+    local ctls = {
+        {
+            Name = "Play",
+            ControlType = "Button",
+            ButtonType = "Toggle",
+            PinStyle = "Input",
+            Count = 1,
+            UserPin = true
+        },
+        {
+            Name = "Stop",
+            ControlType = "Button",
+            ButtonType = "Trigger",
+            PinStyle = "Input",
+            Count = 1,
+            UserPin = true
+        },
+        {
+            Name = "SkipBack30",
+            ControlType = "Button",
+            ButtonType = "Trigger",
+            PinStyle = "Input",
+            Count = 1,
+            UserPin = true
+        },
+        {
+            Name = "SkipForward30",
+            ControlType = "Button",
+            ButtonType = "Trigger",
+            PinStyle = "Input",
+            Count = 1,
+            UserPin = true
+        },
+        {
+            Name = "TimecodeDisplay",
+            ControlType = "Indicator",
+            IndicatorType = "Text",
+            PinStyle = "Output",
+            Count = 1,
+            UserPin = false
+        },
+        {
+            Name = "TimecodeOut",
+            ControlType = "Indicator",
+            IndicatorType = "Text",
+            PinStyle = "Output",
+            Count = 1,
+            UserPin = true
+        },
+        {
+            Name = "Gain",
+            ControlType = "Knob",
+            ControlUnit = "Float",
+            Min = -100,
+            Max = 25,
+            Value = 0,
+            PinStyle = "Input",
+            Count = 1,
+            UserPin = true
+        },
+        {
+            Name = "Mute",
+            ControlType = "Button",
+            ButtonType = "Toggle",
+            PinStyle = "Input",
+            Count = 1,
+            UserPin = true
+        }
+    }
+    return ctls
+end
+
+function GetControlLayout(props)
+    local layout = {}
+    local graphics = {}
+
+    layout["TimecodeDisplay"] = {
+        PrettyName = "Timecode",
+        Position = {10, 30},
+        Size = {240, 24},
+        Style = "Text",
+        TextFontSize = 14,
+        WordWrap = false,
+        IsBold = true
+    }
+
+    layout["Play"] = {
+        PrettyName = "PLAY",
+        Position = {10, 70},
+        Size = {60, 24},
+        Style = "ToggleButton"
+    }
+
+    layout["Stop"] = {
+        PrettyName = "STOP",
+        Position = {80, 70},
+        Size = {60, 24},
+        Style = "Button"
+    }
+
+    layout["SkipBack30"] = {
+        PrettyName = "-30",
+        Position = {150, 70},
+        Size = {45, 24},
+        Style = "Button"
+    }
+
+    layout["SkipForward30"] = {
+        PrettyName = "+30",
+        Position = {205, 70},
+        Size = {45, 24},
+        Style = "Button"
+    }
+
+    layout["Gain"] = {
+        PrettyName = "Gain",
+        Position = {10, 100},
+        Size = {40, 40},
+        Style = "Knob"
+    }
+
+    layout["Mute"] = {
+        PrettyName = "MUTE",
+        Position = {70, 108},
+        Size = {60, 24},
+        Style = "ToggleButton"
+    }
+
+    graphics = {
+        {
+            Type = "Label",
+            Position = {10, 10},
+            Size = {240, 16},
+            Text = "Timecode (HH:MM:SS:FF)",
+            TextSize = 12,
+            HTextAlign = "Left"
+        },
+        {
+            Type = "Label",
+            Position = {10, 56},
+            Size = {60, 12},
+            Text = "PLAY/PAUSE",
+            TextSize = 9,
+            HTextAlign = "Center"
+        },
+        {
+            Type = "Label",
+            Position = {80, 56},
+            Size = {60, 12},
+            Text = "STOP",
+            TextSize = 9,
+            HTextAlign = "Center"
+        },
+        {
+            Type = "Label",
+            Position = {150, 56},
+            Size = {45, 12},
+            Text = "-30",
+            TextSize = 9,
+            HTextAlign = "Center"
+        },
+        {
+            Type = "Label",
+            Position = {205, 56},
+            Size = {45, 12},
+            Text = "+30",
+            TextSize = 9,
+            HTextAlign = "Center"
+        },
+        {
+            Type = "Label",
+            Position = {10, 94},
+            Size = {60, 10},
+            Text = "GAIN (dB)",
+            TextSize = 9,
+            HTextAlign = "Left"
+        },
+        {
+            Type = "Label",
+            Position = {70, 98},
+            Size = {60, 10},
+            Text = "MUTE",
+            TextSize = 9,
+            HTextAlign = "Center"
+        },
+        {
+            Type = "GroupBox",
+            Position = {0, 0},
+            Size = {260, 170},
+            Text = "Timecode Transport"
+        }
+    }
+
+    return layout, graphics
+end
+
+function GetPins(props)
+    local pins = {}
+    return pins
+end
+
+function GetComponents(props)
+    local components = {}
+    return components
+end
+
+function GetWiring(props)
+    local wiring = {}
+    return wiring
+end
+
+local totalFrames = 0
+local framesPerSecond = 30
+local dropFrameEnabled = false
+local running = false
+local tickTimer = nil
+
+local function clampFrames(value)
+    if value < 0 then
+        return 0
+    end
+    return value
+end
+
+local function formatDropFrame(frames, fps)
+    local dropFrames = fps == 60 and 4 or 2
+    local framesPerHour = fps * 60 * 60
+    local framesPer24Hours = framesPerHour * 24
+    local framesPer10Minutes = fps * 60 * 10
+    local framesPerMinute = fps * 60
+
+    local frameNumber = frames % framesPer24Hours
+    local d = math.floor(frameNumber / framesPer10Minutes)
+    local m = frameNumber % framesPer10Minutes
+    local dropped = dropFrames * 9 * d
+        + dropFrames * math.floor(math.max(0, m - dropFrames) / (framesPerMinute - dropFrames))
+    frameNumber = frameNumber + dropped
+
+    local hours = math.floor(frameNumber / framesPerHour) % 24
+    local minutes = math.floor((frameNumber % framesPerHour) / framesPerMinute)
+    local seconds = math.floor((frameNumber % framesPerMinute) / fps)
+    local frame = frameNumber % fps
+
+    return string.format("%02d:%02d:%02d;%02d", hours, minutes, seconds, frame)
+end
+
+local function formatTimecode(frames, fps, dropFrame)
+    local fpsValue = math.max(1, fps)
+    if dropFrame and (fpsValue == 30 or fpsValue == 60) then
+        return formatDropFrame(frames, fpsValue)
+    end
+    local framesPerHour = fpsValue * 3600
+    local framesPerMinute = fpsValue * 60
+
+    local hours = math.floor(frames / framesPerHour) % 24
+    local minutes = math.floor((frames % framesPerHour) / framesPerMinute)
+    local seconds = math.floor((frames % framesPerMinute) / fpsValue)
+    local frame = frames % fpsValue
+
+    return string.format("%02d:%02d:%02d:%02d", hours, minutes, seconds, frame)
+end
+
+local function pushTimecode()
+    local tc = formatTimecode(totalFrames, framesPerSecond, dropFrameEnabled)
+    Controls.TimecodeDisplay.String = tc
+    Controls.TimecodeOut.String = tc
+end
+
+local function getActualFrameRate()
+    if dropFrameEnabled and (framesPerSecond == 30 or framesPerSecond == 60) then
+        return framesPerSecond * 1000 / 1001
+    end
+    return framesPerSecond
+end
+
+local function getExternalAudioPlayer()
+    if not Component or not Component.New then
+        return nil
+    end
+    local playerName = Properties["Audio Player Name"].Value
+    if playerName == nil or playerName == "" then
+        return nil
+    end
+    local ok, component = pcall(Component.New, playerName)
+    if ok then
+        return component
+    end
+    return nil
+end
+
+local function setComponentNumber(component, name, value)
+    if not component or not component.Controls or not component.Controls[name] then
+        return
+    end
+    local ctl = component.Controls[name]
+    if not pcall(function()
+        ctl.Value = value
+    end) then
+        pcall(function()
+            ctl.Float = value
+        end)
+    end
+end
+
+local function setComponentBoolean(component, name, value)
+    if not component or not component.Controls or not component.Controls[name] then
+        return
+    end
+    local ctl = component.Controls[name]
+    pcall(function()
+        ctl.Boolean = value
+    end)
+end
+
+local function setFirstNumberControl(component, names, value)
+    if not component or not component.Controls then
+        return false
+    end
+    for _, name in ipairs(names) do
+        if component.Controls[name] then
+            setComponentNumber(component, name, value)
+            return true
+        end
+    end
+    return false
+end
+
+local function setFirstBooleanControl(component, names, value)
+    if not component or not component.Controls then
+        return false
+    end
+    for _, name in ipairs(names) do
+        if component.Controls[name] then
+            setComponentBoolean(component, name, value)
+            return true
+        end
+    end
+    return false
+end
+
+local function triggerComponent(component, name)
+    if not component or not component.Controls or not component.Controls[name] then
+        return
+    end
+    local ctl = component.Controls[name]
+    if ctl.Trigger then
+        pcall(function()
+            ctl:Trigger()
+        end)
+        return
+    end
+    pcall(function()
+        ctl.Boolean = true
+    end)
+end
+
+local function applyAudioGainMute()
+    local player = getExternalAudioPlayer()
+    if not player then
+        return
+    end
+    local gainNames = {
+        "Gain",
+        "Gain (dB)",
+        "Level",
+        "Level (dB)",
+        "Output Gain",
+        "Output Level",
+        "Volume",
+        "Trim"
+    }
+    local muteNames = {
+        "Mute",
+        "Muted",
+        "Output Mute"
+    }
+    setFirstNumberControl(player, gainNames, Controls.Gain.Value)
+    setFirstBooleanControl(player, muteNames, Controls.Mute.Boolean)
+end
+
+local function syncAudioToTimecode()
+    local player = getExternalAudioPlayer()
+    if not player then
+        return
+    end
+    local seconds = totalFrames / getActualFrameRate()
+    local positionNames = {"Position", "Seek", "Position (s)", "Time", "Current Time"}
+    for _, name in ipairs(positionNames) do
+        if player.Controls and player.Controls[name] then
+            setComponentNumber(player, name, seconds)
+            break
+        end
+    end
+end
+
+local function startTimer()
+    if tickTimer then
+        tickTimer:Stop()
+    end
+    tickTimer = Timer.New()
+    tickTimer.EventHandler = function()
+        if running then
+            totalFrames = totalFrames + 1
+            pushTimecode()
+            syncAudioToTimecode()
+        end
+    end
+    tickTimer:Start(1 / getActualFrameRate())
+end
+
+local function applyFrameRate(newRate)
+    framesPerSecond = math.max(1, math.floor(newRate))
+    startTimer()
+    pushTimecode()
+end
+
+local function updatePlayLabel()
+    local label = running and "PAUSE" or "PLAY"
+    setButtonLabel(Controls.Play, label)
+end
+
+local function applyDropFrame(newValue)
+    dropFrameEnabled = newValue == true
+    startTimer()
+    pushTimecode()
+end
+
+local function setAudioPlayState(isPlaying)
+    local player = getExternalAudioPlayer()
+    if not player then
+        return
+    end
+    if isPlaying then
+        syncAudioToTimecode()
+        triggerComponent(player, "Play")
+    else
+        if player.Controls and player.Controls["Pause"] then
+            triggerComponent(player, "Pause")
+        else
+            triggerComponent(player, "Stop")
+        end
+    end
+end
+
+if Controls then
+    applyFrameRate(Properties.FrameRate.Value)
+    applyDropFrame(Properties.DropFrame.Value)
+    setButtonLabel(Controls.Stop, "STOP")
+    setButtonLabel(Controls.SkipBack30, "-30")
+    setButtonLabel(Controls.SkipForward30, "+30")
+    setButtonLabel(Controls.Mute, "MUTE")
+    updatePlayLabel()
+    applyAudioGainMute()
+
+    Controls.Play.EventHandler = function(ctrl)
+        running = ctrl.Boolean
+        if running then
+            startTimer()
+        end
+        updatePlayLabel()
+        setAudioPlayState(running)
+    end
+
+    Controls.Stop.EventHandler = function()
+        running = false
+        totalFrames = 0
+        Controls.Play.Boolean = false
+        updatePlayLabel()
+        setAudioPlayState(false)
+        syncAudioToTimecode()
+        pushTimecode()
+    end
+
+    Controls.SkipBack30.EventHandler = function()
+        totalFrames = clampFrames(totalFrames - (framesPerSecond * 30))
+        syncAudioToTimecode()
+        pushTimecode()
+    end
+
+    Controls.SkipForward30.EventHandler = function()
+        totalFrames = totalFrames + (framesPerSecond * 30)
+        syncAudioToTimecode()
+        pushTimecode()
+    end
+
+    Controls.Gain.EventHandler = function()
+        applyAudioGainMute()
+    end
+
+    Controls.Mute.EventHandler = function()
+        applyAudioGainMute()
+    end
+
+    Properties.FrameRate.EventHandler = function()
+        applyFrameRate(Properties.FrameRate.Value)
+    end
+
+    Properties.DropFrame.EventHandler = function()
+        applyDropFrame(Properties.DropFrame.Value)
+    end
+
+    Properties["Audio Player Name"].EventHandler = function()
+        applyAudioGainMute()
+        syncAudioToTimecode()
+    end
+
+    pushTimecode()
+end
