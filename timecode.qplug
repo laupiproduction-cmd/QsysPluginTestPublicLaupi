@@ -125,6 +125,46 @@ function GetControls(props)
             PinStyle = "Output",
             Count = 1,
             UserPin = true
+        },
+        {
+            Name = "Root",
+            ControlType = "Text",
+            PinStyle = "Input",
+            Count = 1,
+            UserPin = true
+        },
+        {
+            Name = "Directory",
+            ControlType = "Text",
+            PinStyle = "Input",
+            Count = 1,
+            UserPin = true
+        },
+        {
+            Name = "File",
+            ControlType = "Text",
+            PinStyle = "Input",
+            Count = 1,
+            UserPin = true
+        },
+        {
+            Name = "Gain",
+            ControlType = "Knob",
+            ControlUnit = "Float",
+            Min = -100,
+            Max = 25,
+            Value = 0,
+            PinStyle = "Input",
+            Count = 1,
+            UserPin = true
+        },
+        {
+            Name = "Mute",
+            ControlType = "Button",
+            ButtonType = "Toggle",
+            PinStyle = "Input",
+            Count = 1,
+            UserPin = true
         }
     }
     return ctls
@@ -137,7 +177,7 @@ function GetControlLayout(props)
     layout["TimecodeDisplay"] = {
         PrettyName = "Timecode",
         Position = {10, 30},
-        Size = {240, 24},
+        Size = {280, 24},
         Style = "Text",
         TextFontSize = 14,
         WordWrap = false,
@@ -146,44 +186,112 @@ function GetControlLayout(props)
 
     layout["Play"] = {
         PrettyName = "PLAY",
-        Position = {10, 70},
+        Position = {10, 148},
         Size = {60, 24},
         Style = "ToggleButton"
     }
 
     layout["Stop"] = {
         PrettyName = "STOP",
-        Position = {80, 70},
+        Position = {80, 148},
         Size = {60, 24},
         Style = "Button"
     }
 
     layout["SkipBack30"] = {
         PrettyName = "-30",
-        Position = {150, 70},
+        Position = {150, 148},
         Size = {45, 24},
         Style = "Button"
     }
 
     layout["SkipForward30"] = {
         PrettyName = "+30",
-        Position = {205, 70},
+        Position = {205, 148},
         Size = {45, 24},
         Style = "Button"
+    }
+
+    layout["Root"] = {
+        PrettyName = "Root",
+        Position = {60, 58},
+        Size = {230, 18},
+        Style = "Text",
+        TextFontSize = 10,
+        WordWrap = false,
+        IsBold = false
+    }
+
+    layout["Directory"] = {
+        PrettyName = "Directory",
+        Position = {60, 82},
+        Size = {230, 18},
+        Style = "Text",
+        TextFontSize = 10,
+        WordWrap = false,
+        IsBold = false
+    }
+
+    layout["File"] = {
+        PrettyName = "File",
+        Position = {60, 106},
+        Size = {230, 18},
+        Style = "Text",
+        TextFontSize = 10,
+        WordWrap = false,
+        IsBold = false
+    }
+
+    layout["Gain"] = {
+        PrettyName = "Gain",
+        Position = {10, 186},
+        Size = {40, 40},
+        Style = "Knob"
+    }
+
+    layout["Mute"] = {
+        PrettyName = "MUTE",
+        Position = {70, 194},
+        Size = {60, 24},
+        Style = "ToggleButton"
     }
 
     graphics = {
         {
             Type = "Label",
             Position = {10, 10},
-            Size = {240, 16},
+            Size = {280, 16},
             Text = "Timecode (HH:MM:SS:FF)",
             TextSize = 12,
             HTextAlign = "Left"
         },
         {
             Type = "Label",
-            Position = {10, 56},
+            Position = {10, 62},
+            Size = {45, 12},
+            Text = "Root",
+            TextSize = 10,
+            HTextAlign = "Left"
+        },
+        {
+            Type = "Label",
+            Position = {10, 86},
+            Size = {45, 12},
+            Text = "Dir",
+            TextSize = 10,
+            HTextAlign = "Left"
+        },
+        {
+            Type = "Label",
+            Position = {10, 110},
+            Size = {45, 12},
+            Text = "File",
+            TextSize = 10,
+            HTextAlign = "Left"
+        },
+        {
+            Type = "Label",
+            Position = {10, 134},
             Size = {60, 12},
             Text = "PLAY/PAUSE",
             TextSize = 9,
@@ -191,7 +299,7 @@ function GetControlLayout(props)
         },
         {
             Type = "Label",
-            Position = {80, 56},
+            Position = {80, 134},
             Size = {60, 12},
             Text = "STOP",
             TextSize = 9,
@@ -199,7 +307,7 @@ function GetControlLayout(props)
         },
         {
             Type = "Label",
-            Position = {150, 56},
+            Position = {150, 134},
             Size = {45, 12},
             Text = "-30",
             TextSize = 9,
@@ -207,16 +315,32 @@ function GetControlLayout(props)
         },
         {
             Type = "Label",
-            Position = {205, 56},
+            Position = {205, 134},
             Size = {45, 12},
             Text = "+30",
             TextSize = 9,
             HTextAlign = "Center"
         },
         {
+            Type = "Label",
+            Position = {10, 174},
+            Size = {60, 10},
+            Text = "GAIN (dB)",
+            TextSize = 9,
+            HTextAlign = "Left"
+        },
+        {
+            Type = "Label",
+            Position = {70, 184},
+            Size = {60, 10},
+            Text = "MUTE",
+            TextSize = 9,
+            HTextAlign = "Center"
+        },
+        {
             Type = "GroupBox",
             Position = {0, 0},
-            Size = {260, 110},
+            Size = {300, 240},
             Text = "Timecode Transport"
         }
     }
@@ -226,16 +350,30 @@ end
 
 function GetPins(props)
     local pins = {}
+    table.insert(pins, {
+        Name = "Audio Output 1",
+        Direction = "output"
+    })
+    table.insert(pins, {
+        Name = "Audio Output 2",
+        Direction = "output"
+    })
     return pins
 end
 
 function GetComponents(props)
     local components = {}
+    table.insert(components, {
+        Name = "audio_player",
+        Type = "audio_player"
+    })
     return components
 end
 
 function GetWiring(props)
     local wiring = {}
+    table.insert(wiring, {"audio_player Output 1", "Audio Output 1"})
+    table.insert(wiring, {"audio_player Output 2", "Audio Output 2"})
     return wiring
 end
 
@@ -303,6 +441,73 @@ local function getActualFrameRate()
     return framesPerSecond
 end
 
+local function getAudioPlayer()
+    if not Components then
+        return nil
+    end
+    return Components.audio_player or Components["audio_player"]
+end
+
+local function setComponentString(component, name, value)
+    if not component or not component.Controls or not component.Controls[name] then
+        return
+    end
+    local ctl = component.Controls[name]
+    pcall(function()
+        ctl.String = value
+    end)
+end
+
+local function setComponentNumber(component, name, value)
+    if not component or not component.Controls or not component.Controls[name] then
+        return
+    end
+    local ctl = component.Controls[name]
+    if not pcall(function()
+        ctl.Value = value
+    end) then
+        pcall(function()
+            ctl.Float = value
+        end)
+    end
+end
+
+local function setComponentBoolean(component, name, value)
+    if not component or not component.Controls or not component.Controls[name] then
+        return
+    end
+    local ctl = component.Controls[name]
+    pcall(function()
+        ctl.Boolean = value
+    end)
+end
+
+local function triggerComponent(component, name)
+    if not component or not component.Controls or not component.Controls[name] then
+        return
+    end
+    local ctl = component.Controls[name]
+    if ctl.Trigger then
+        pcall(function()
+            ctl:Trigger()
+        end)
+        return
+    end
+    pcall(function()
+        ctl.Boolean = true
+    end)
+end
+
+local function syncAudioToTimecode()
+    local player = getAudioPlayer()
+    if not player then
+        return
+    end
+    local seconds = totalFrames / getActualFrameRate()
+    setComponentNumber(player, "Position", seconds)
+    setComponentNumber(player, "Seek", seconds)
+end
+
 local function startTimer()
     if tickTimer then
         tickTimer:Stop()
@@ -334,13 +539,44 @@ local function applyDropFrame(newValue)
     pushTimecode()
 end
 
+local function applyAudioSettings()
+    local player = getAudioPlayer()
+    if not player then
+        return
+    end
+    setComponentString(player, "Root", Controls.Root.String)
+    setComponentString(player, "Directory", Controls.Directory.String)
+    setComponentString(player, "File", Controls.File.String)
+    setComponentNumber(player, "Gain", Controls.Gain.Value)
+    setComponentBoolean(player, "Mute", Controls.Mute.Boolean)
+end
+
+local function setAudioPlayState(isPlaying)
+    local player = getAudioPlayer()
+    if not player then
+        return
+    end
+    if isPlaying then
+        syncAudioToTimecode()
+        triggerComponent(player, "Play")
+    else
+        if player.Controls and player.Controls["Pause"] then
+            triggerComponent(player, "Pause")
+        else
+            triggerComponent(player, "Stop")
+        end
+    end
+end
+
 if Controls then
     applyFrameRate(Properties.FrameRate.Value)
     applyDropFrame(Properties.DropFrame.Value)
     setButtonLabel(Controls.Stop, "STOP")
     setButtonLabel(Controls.SkipBack30, "-30")
     setButtonLabel(Controls.SkipForward30, "+30")
+    setButtonLabel(Controls.Mute, "MUTE")
     updatePlayLabel()
+    applyAudioSettings()
 
     Controls.Play.EventHandler = function(ctrl)
         running = ctrl.Boolean
@@ -348,6 +584,7 @@ if Controls then
             startTimer()
         end
         updatePlayLabel()
+        setAudioPlayState(running)
     end
 
     Controls.Stop.EventHandler = function()
@@ -355,17 +592,47 @@ if Controls then
         totalFrames = 0
         Controls.Play.Boolean = false
         updatePlayLabel()
+        setAudioPlayState(false)
+        syncAudioToTimecode()
         pushTimecode()
     end
 
     Controls.SkipBack30.EventHandler = function()
         totalFrames = clampFrames(totalFrames - (framesPerSecond * 30))
+        syncAudioToTimecode()
         pushTimecode()
     end
 
     Controls.SkipForward30.EventHandler = function()
         totalFrames = totalFrames + (framesPerSecond * 30)
+        syncAudioToTimecode()
         pushTimecode()
+    end
+
+    Controls.Root.EventHandler = function(ctrl)
+        local player = getAudioPlayer()
+        setComponentString(player, "Root", ctrl.String)
+    end
+
+    Controls.Directory.EventHandler = function(ctrl)
+        local player = getAudioPlayer()
+        setComponentString(player, "Directory", ctrl.String)
+    end
+
+    Controls.File.EventHandler = function(ctrl)
+        local player = getAudioPlayer()
+        setComponentString(player, "File", ctrl.String)
+        syncAudioToTimecode()
+    end
+
+    Controls.Gain.EventHandler = function(ctrl)
+        local player = getAudioPlayer()
+        setComponentNumber(player, "Gain", ctrl.Value)
+    end
+
+    Controls.Mute.EventHandler = function(ctrl)
+        local player = getAudioPlayer()
+        setComponentBoolean(player, "Mute", ctrl.Boolean)
     end
 
     Properties.FrameRate.EventHandler = function()
