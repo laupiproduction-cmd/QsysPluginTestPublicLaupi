@@ -119,6 +119,13 @@ function GetControls(props)
   add({ Name = "GlobalStopControlName", ControlType = "Text", Count = 1 })
   add({ Name = "PanicUdpPayload", ControlType = "Text", Count = 1 })
 
+  -- Optional global fire condition -- applies to every cue in addition to
+  -- any per-cue condition. Disabled (not configured) by default.
+  add({ Name = "GlobalConditionEnable", ControlType = "Button", ButtonType = "Toggle", Count = 1 })
+  add({ Name = "GlobalConditionTarget", ControlType = "Text", Count = 1 })
+  add({ Name = "GlobalConditionControl", ControlType = "Text", Count = 1 })
+  add({ Name = "GlobalConditionRequired", ControlType = "Button", ButtonType = "Toggle", Count = 1 })
+
   -- Hidden persistence control (never placed in GetControlLayout) -------------
   add({ Name = "ShowData", ControlType = "Text", Count = 1 })
 
@@ -153,6 +160,15 @@ function GetControls(props)
   add({ Name = "CueEditColor", ControlType = "Text", Count = 1 })
   add({ Name = "CueEditArm", ControlType = "Button", ButtonType = "Toggle", Count = 1 })
   add({ Name = "CueEditConfirm", ControlType = "Button", ButtonType = "Toggle", Count = 1 })
+
+  -- Optional per-cue fire condition -- OFF by default, never required. When
+  -- enabled, the cue only fires if the referenced control's Boolean state
+  -- matches the required state (e.g. a Block Controller toggle pressed/not).
+  add({ Name = "CueConditionEnable", ControlType = "Button", ButtonType = "Toggle", Count = 1 })
+  add({ Name = "CueConditionTarget", ControlType = "Text", Count = 1 })
+  add({ Name = "CueConditionControl", ControlType = "Text", Count = 1 })
+  add({ Name = "CueConditionRequired", ControlType = "Button", ButtonType = "Toggle", Count = 1 })
+
   add({ Name = "AddActionButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
 
   add({ Name = "ActionType", ControlType = "Text", Count = maxActions })
@@ -352,11 +368,19 @@ function GetControlLayout(props)
     title("SHOW CUE ENGINE  ~  Show Editor", M, 6, 600)
     local y = 30
 
-    -- Panic / stop settings -----------------------------------------------------
-    card(M, y, W - 2 * M, 54, "GLOBAL STOP / PANIC SETTINGS")
+    -- Panic / stop settings + optional Global Condition ---------------------------
+    -- The Global Condition is optional (off by default) and applies to EVERY
+    -- cue in addition to any per-cue condition below -- e.g. a single "show
+    -- is live" toggle that must be on before anything can fire.
+    card(M, y, W - 2 * M, 82, "GLOBAL SETTINGS")
     layout["GlobalStopControlName"] = { PrettyName = "Player Stop Control Name", Style = "Text", Position = { 28, y + 18 }, Size = { 300, 26 } }
     layout["PanicUdpPayload"] = { PrettyName = "Panic UDP Payload", Style = "Text", Position = { 344, y + 18 }, Size = { 300, 26 } }
-    y = y + 54 + 12
+    layout["GlobalConditionEnable"] = { PrettyName = "Global Condition~Enable", Style = "Button", ButtonStyle = "Toggle", Legend = "Global Condition", Color = Accent, CornerRadius = 4, Position = { 28, y + 50 }, Size = { 140, 22 } }
+    layout["GlobalConditionTarget"] = { PrettyName = "Global Condition~Target (device)", Style = "ComboBox", Position = { 172, y + 50 }, Size = { 150, 22 } }
+    layout["GlobalConditionControl"] = { PrettyName = "Global Condition~Control", Style = "ComboBox", Position = { 326, y + 50 }, Size = { 150, 22 } }
+    layout["GlobalConditionRequired"] = { PrettyName = "Global Condition~Required State", Style = "Button", ButtonStyle = "Toggle", Legend = "Must be ON", Color = Success, OffColor = { 150, 155, 162 }, CornerRadius = 4, Position = { 480, y + 50 }, Size = { 110, 22 } }
+    graphics[#graphics + 1] = { Type = "Text", Text = "Applies to every cue, on top of any per-cue condition below.", FontSize = 8, Position = { 600, y + 53 }, Size = { W - 2 * M - 600 + M, 16 } }
+    y = y + 82 + 12
 
     -- Export / Import -------------------------------------------------------------
     card(M, y, W - 2 * M, 172, "EXPORT / IMPORT SHOW (copy-paste JSON)")
@@ -381,7 +405,7 @@ function GetControlLayout(props)
     -- so nothing is clipped; scrolling to reach lower rows is expected once
     -- Max Actions Per Cue is set much above the default.
     local rowH = 24
-    local editorH = 132 + maxActions * rowH
+    local editorH = 160 + maxActions * rowH
     card(M, y, W - 2 * M, editorH, "CUE EDITOR  (scrolls with the page once Max Actions Per Cue is large)")
     layout["SelectedCue"] = { PrettyName = "Select Cue", Style = "ComboBox", Position = { 28, y + 18 }, Size = { 240, 20 } }
     layout["CueEditColor"] = { PrettyName = "Cue Color (#RRGGBB)", Style = "Text", Position = { 280, y + 18 }, Size = { 80, 20 } }
@@ -391,12 +415,21 @@ function GetControlLayout(props)
     layout["CueEditName"] = { PrettyName = "Rename Cue", Style = "Text", Position = { 28, y + 46 }, Size = { 300, 20 } }
     layout["CueEditNotes"] = { PrettyName = "Notes (run sheet)", Style = "Text", Position = { 336, y + 46 }, Size = { W - 2 * M - 336 - 14, 20 } }
 
-    graphics[#graphics + 1] = { Type = "Text", Text = "Type", FontSize = 8, Position = { 28, y + 74 }, Size = { 110, 12 } }
-    graphics[#graphics + 1] = { Type = "Text", Text = "Target (device / UDP target)", FontSize = 8, Position = { 146, y + 74 }, Size = { 160, 12 } }
-    graphics[#graphics + 1] = { Type = "Text", Text = "Control", FontSize = 8, Position = { 314, y + 74 }, Size = { 140, 12 } }
-    graphics[#graphics + 1] = { Type = "Text", Text = "Value (auto: toggle for Boolean controls, text otherwise)", FontSize = 8, Position = { 462, y + 74 }, Size = { 160, 12 } }
+    -- Optional per-cue fire condition -- OFF by default; this cue always
+    -- fires unless you turn it on. Target/Control/Required only matter (and
+    -- are only shown) once Condition is enabled.
+    layout["CueConditionEnable"] = { PrettyName = "Cue Condition~Enable", Style = "Button", ButtonStyle = "Toggle", Legend = "Condition", Color = Accent, CornerRadius = 4, Position = { 28, y + 74 }, Size = { 90, 20 } }
+    layout["CueConditionTarget"] = { PrettyName = "Cue Condition~Target (device)", Style = "ComboBox", Position = { 122, y + 74 }, Size = { 150, 20 } }
+    layout["CueConditionControl"] = { PrettyName = "Cue Condition~Control", Style = "ComboBox", Position = { 276, y + 74 }, Size = { 150, 20 } }
+    layout["CueConditionRequired"] = { PrettyName = "Cue Condition~Required State", Style = "Button", ButtonStyle = "Toggle", Legend = "Must be ON", Color = Success, OffColor = { 150, 155, 162 }, CornerRadius = 4, Position = { 430, y + 74 }, Size = { 110, 20 } }
+    graphics[#graphics + 1] = { Type = "Text", Text = "Optional -- leave Condition off to always allow this cue to fire.", FontSize = 8, Position = { 544, y + 76 }, Size = { W - 2 * M - 544 + M, 16 } }
 
-    local rowsY = y + 88
+    graphics[#graphics + 1] = { Type = "Text", Text = "Type", FontSize = 8, Position = { 28, y + 102 }, Size = { 110, 12 } }
+    graphics[#graphics + 1] = { Type = "Text", Text = "Target (device / UDP target)", FontSize = 8, Position = { 146, y + 102 }, Size = { 160, 12 } }
+    graphics[#graphics + 1] = { Type = "Text", Text = "Control", FontSize = 8, Position = { 314, y + 102 }, Size = { 140, 12 } }
+    graphics[#graphics + 1] = { Type = "Text", Text = "Value (auto: toggle for Boolean controls, text otherwise)", FontSize = 8, Position = { 462, y + 102 }, Size = { 160, 12 } }
+
+    local rowsY = y + 116
     for a = 1, maxActions do
       local ry = rowsY + (a - 1) * rowH
       layout[key("ActionType", maxActions, a)] = { PrettyName = string.format("Action %d~Type", a), Style = "ComboBox", Position = { 28, ry }, Size = { 110, 20 } }
@@ -461,13 +494,19 @@ local DoPlayerTrigger, DoNamedControlSet, DoUdpSend, DispatchAction, ParseValueS
 local FindUdpTargetByName, OpenUdpSocket
 local SetStatusMessage, SetError, UpdateStatus, LogCueFire
 local FireCueNow, OnCueButtonPressed, StopAllPlayers, StartPingHeartbeat, CallAfter
+local EvaluateCondition, CheckCueConditions, PopulateConditionControlChoices
+local RefreshConditionEditorVisibility, RefreshGlobalConditionVisibility, PushGlobalConditionToControls
 local Init
 
 -- ----------------------------------------------------------------------------
 -- State
 -- ----------------------------------------------------------------------------
-local Cues = {}          -- 1..MaxCues -> { name, notes, color, armed, confirm, state, activeActions, actions = {1..MaxActions} }
+local Cues = {}          -- 1..MaxCues -> { name, notes, color, armed, confirm, state, activeActions, actions = {1..MaxActions}, condition }
 local Devices = {}       -- 1..MaxDevices -> { name, component } (friendly name -> real Q-SYS component name)
+-- Optional fire conditions: { enabled, target = <device name>, control = <control name>, required = <bool> }.
+-- A cue only fires if ALL enabled conditions (Global, then its own) currently
+-- read as `required`. Disabled (enabled=false) conditions are always satisfied.
+local GlobalCondition = { enabled = false, target = "", control = "", required = true }
 local UdpTargets = {}    -- 1..NumUdp  -> { name, ip, port }
 local UdpSockets = {}    -- 1..NumUdp  -> UdpSocket object (or nil if never opened / failed)
 local ComponentCache = {}-- real component name -> Component handle, or false if resolution failed
@@ -712,6 +751,100 @@ RefreshActionValueEditor = function(a)
 end
 
 --=============================================================================
+-- Optional fire conditions (Global + per-cue)
+--=============================================================================
+
+-- Populates the Target choices (curated Devices, same list used by actions)
+-- and, once a Target is picked, the Control choices (auto-discovered from
+-- that device's real component via Component.GetControls() -- same fixed
+-- lookup used for action Control dropdowns).
+PopulateConditionControlChoices = function(targetCtrlName, controlCtrlName, cond)
+  pcall(function() Controls[targetCtrlName].Choices = DeviceNameList() end)
+  if cond.target == "" then return end
+  local compName = ResolveDeviceComponent(cond.target)
+  if not compName or compName == "" then return end
+  local comp = GetComponent(compName)
+  if not comp then return end
+  pcall(function()
+    local names = {}
+    for _, ctrl in ipairs(Component.GetControls(comp)) do
+      if ctrl.Name then table.insert(names, ctrl.Name) end
+    end
+    table.sort(names)
+    Controls[controlCtrlName].Choices = names
+  end)
+end
+
+RefreshGlobalConditionVisibility = function()
+  local enabled = GlobalCondition.enabled
+  pcall(function()
+    Controls.GlobalConditionTarget.IsInvisible = not enabled
+    Controls.GlobalConditionControl.IsInvisible = not enabled
+    Controls.GlobalConditionRequired.IsInvisible = not enabled
+  end)
+end
+
+RefreshConditionEditorVisibility = function()
+  local enabled = Cues[SelectedCueIndex].condition.enabled
+  pcall(function()
+    Controls.CueConditionTarget.IsInvisible = not enabled
+    Controls.CueConditionControl.IsInvisible = not enabled
+    Controls.CueConditionRequired.IsInvisible = not enabled
+  end)
+end
+
+PushGlobalConditionToControls = function()
+  pcall(function()
+    Controls.GlobalConditionEnable.Boolean = GlobalCondition.enabled
+    Controls.GlobalConditionTarget.String = GlobalCondition.target
+    Controls.GlobalConditionControl.String = GlobalCondition.control
+    Controls.GlobalConditionRequired.Boolean = GlobalCondition.required
+    Controls.GlobalConditionRequired.Legend = GlobalCondition.required and "Must be ON" or "Must be OFF"
+  end)
+  RefreshGlobalConditionVisibility()
+  if GlobalCondition.enabled then
+    PopulateConditionControlChoices("GlobalConditionTarget", "GlobalConditionControl", GlobalCondition)
+  end
+end
+
+-- Reads the CURRENT live state of a condition's referenced control (never
+-- the stored show data) and compares it to the required state. A disabled
+-- condition always passes. Fully pcall-wrapped: any resolution failure
+-- (missing device/component/control) is reported as a specific reason,
+-- never a Lua error.
+EvaluateCondition = function(cond, label)
+  if not cond.enabled then return true, nil end
+  if cond.target == "" or cond.control == "" then
+    return false, string.format("%s is enabled but not fully configured", label)
+  end
+  local compName = ResolveDeviceComponent(cond.target)
+  if not compName or compName == "" then
+    return false, string.format("%s: device not configured: %s", label, cond.target)
+  end
+  local comp = GetComponent(compName)
+  if not comp then
+    return false, string.format("%s: component not found: %s", label, compName)
+  end
+  local ok, val = pcall(function() return comp[cond.control].Boolean end)
+  if not ok then
+    return false, string.format("%s: could not read %s.%s (%s)", label, compName, cond.control, tostring(val))
+  end
+  local actual = val and true or false
+  if actual ~= cond.required then
+    return false, string.format("%s: %s.%s is %s (needs %s)", label, compName, cond.control, tostring(actual), tostring(cond.required))
+  end
+  return true, nil
+end
+
+-- Global condition (if any) must pass, THEN the cue's own condition (if
+-- any). Both are optional; a cue with neither configured always fires.
+CheckCueConditions = function(i)
+  local okG, errG = EvaluateCondition(GlobalCondition, "Global condition")
+  if not okG then return false, errG end
+  return EvaluateCondition(Cues[i].condition, "Cue condition")
+end
+
+--=============================================================================
 -- Persistence (rapidjson <-> hidden ShowData string control)
 --=============================================================================
 BuildShowTable = function()
@@ -727,6 +860,7 @@ BuildShowTable = function()
       id = i, name = c.name, notes = c.notes, color = c.color,
       armed = c.armed, confirm = c.confirm, activeActions = c.activeActions,
       actions = actionsOut,
+      condition = { enabled = c.condition.enabled, target = c.condition.target, control = c.condition.control, required = c.condition.required },
     })
   end
   local devicesOut = {}
@@ -743,6 +877,7 @@ BuildShowTable = function()
     cues = cuesOut,
     devices = devicesOut,
     udpTargets = udpOut,
+    globalCondition = { enabled = GlobalCondition.enabled, target = GlobalCondition.target, control = GlobalCondition.control, required = GlobalCondition.required },
   }
 end
 
@@ -792,6 +927,18 @@ ApplyShowTable = function(data)
         else
           c.activeActions = highestUsed
         end
+        if type(src.condition) == "table" then
+          c.condition.enabled = src.condition.enabled and true or false
+          c.condition.target = tostring(src.condition.target or "")
+          c.condition.control = tostring(src.condition.control or "")
+          if src.condition.required == nil then
+            c.condition.required = true
+          else
+            c.condition.required = src.condition.required and true or false
+          end
+        else
+          c.condition = { enabled = false, target = "", control = "", required = true }
+        end
       end
     end
   end
@@ -819,9 +966,21 @@ ApplyShowTable = function(data)
       PushUdpTargetToControls(i)
     end
   end
+  if type(data.globalCondition) == "table" then
+    local gc = data.globalCondition
+    GlobalCondition.enabled = gc.enabled and true or false
+    GlobalCondition.target = tostring(gc.target or "")
+    GlobalCondition.control = tostring(gc.control or "")
+    if gc.required == nil then
+      GlobalCondition.required = true
+    else
+      GlobalCondition.required = gc.required and true or false
+    end
+  end
 
   local wasLoading = Loading
   Loading = true
+  PushGlobalConditionToControls()
   for i = 1, MaxCues do RefreshCueButtonColor(i) end
   RefreshSelectedCueChoices()
   SelectedCueIndex = 1
@@ -861,6 +1020,9 @@ ValidateShowTable = function(data)
         if not aa or aa < 0 or aa > MaxActions then
           return false, string.format("Cue %d has invalid activeActions: %s", i, tostring(c.activeActions))
         end
+      end
+      if c.condition ~= nil and type(c.condition) ~= "table" then
+        return false, string.format("Cue %d 'condition' must be an object", i)
       end
       if c.actions ~= nil then
         if type(c.actions) ~= "table" then return false, string.format("Cue %d 'actions' must be an array", i) end
@@ -904,6 +1066,9 @@ ValidateShowTable = function(data)
         end
       end
     end
+  end
+  if data.globalCondition ~= nil and type(data.globalCondition) ~= "table" then
+    return false, "'globalCondition' must be an object"
   end
   return true
 end
@@ -958,7 +1123,16 @@ PushSelectedCueToEditor = function()
     Controls.CueEditColor.String = c.color
     Controls.CueEditArm.Boolean = c.armed
     Controls.CueEditConfirm.Boolean = c.confirm
+    Controls.CueConditionEnable.Boolean = c.condition.enabled
+    Controls.CueConditionTarget.String = c.condition.target
+    Controls.CueConditionControl.String = c.condition.control
+    Controls.CueConditionRequired.Boolean = c.condition.required
+    Controls.CueConditionRequired.Legend = c.condition.required and "Must be ON" or "Must be OFF"
   end)
+  RefreshConditionEditorVisibility()
+  if c.condition.enabled then
+    PopulateConditionControlChoices("CueConditionTarget", "CueConditionControl", c.condition)
+  end
   for a = 1, MaxActions do
     local act = c.actions[a]
     pcall(function()
@@ -995,6 +1169,7 @@ RefreshCueButtonColor = function(i)
   pcall(function()
     Controls.CueButton[i].Color = color
     local label = (c.name ~= nil and c.name ~= "") and c.name or ("Cue " .. i)
+    if c.condition.enabled then label = label .. " *" end -- "*" marks a conditional cue
     Controls.CueButton[i].Legend = string.format("%d: %s", i, label)
   end)
 end
@@ -1033,8 +1208,9 @@ UpdateStatus = function(i)
   end)
 end
 
-LogCueFire = function(i, success)
-  local line = string.format("%s  Cue %d: %s  %s", os.date("%H:%M:%S"), i, Cues[i].name, success and "OK" or "ERROR")
+LogCueFire = function(i, success, statusLabel)
+  local label = statusLabel or (success and "OK" or "ERROR")
+  local line = string.format("%s  Cue %d: %s  %s", os.date("%H:%M:%S"), i, Cues[i].name, label)
   table.insert(CueLog, 1, line)
   while #CueLog > CUE_LOG_MAX do table.remove(CueLog) end
   pcall(function() Controls.CueLogText.String = table.concat(CueLog, "\n") end)
@@ -1202,6 +1378,12 @@ FireCueNow = function(i)
 end
 
 OnCueButtonPressed = function(i)
+  local condOk, condReason = CheckCueConditions(i)
+  if not condOk then
+    SetError(string.format("Cue %d blocked: %s", i, condReason))
+    LogCueFire(i, false, "BLOCKED")
+    return
+  end
   local cue = Cues[i]
   if not cue.confirm then
     FireCueNow(i)
@@ -1394,6 +1576,65 @@ Controls.CueEditConfirm.EventHandler = function(ctl)
   MarkDirty(); SaveShowData()
 end
 
+Controls.CueConditionEnable.EventHandler = function(ctl)
+  if Loading then return end
+  local cond = Cues[SelectedCueIndex].condition
+  cond.enabled = ctl.Boolean
+  RefreshConditionEditorVisibility()
+  if cond.enabled then PopulateConditionControlChoices("CueConditionTarget", "CueConditionControl", cond) end
+  RefreshCueButtonColor(SelectedCueIndex) -- reflect the "*" conditional marker immediately
+  MarkDirty(); SaveShowData()
+end
+Controls.CueConditionTarget.EventHandler = function(ctl)
+  if Loading then return end
+  local cond = Cues[SelectedCueIndex].condition
+  if Controls.LockToggle.Boolean then ctl.String = cond.target; return end
+  cond.target = ctl.String
+  PopulateConditionControlChoices("CueConditionTarget", "CueConditionControl", cond)
+  MarkDirty(); SaveShowData()
+end
+Controls.CueConditionControl.EventHandler = function(ctl)
+  if Loading then return end
+  local cond = Cues[SelectedCueIndex].condition
+  if Controls.LockToggle.Boolean then ctl.String = cond.control; return end
+  cond.control = ctl.String
+  MarkDirty(); SaveShowData()
+end
+Controls.CueConditionRequired.EventHandler = function(ctl)
+  if Loading then return end
+  local cond = Cues[SelectedCueIndex].condition
+  cond.required = ctl.Boolean
+  ctl.Legend = ctl.Boolean and "Must be ON" or "Must be OFF"
+  MarkDirty(); SaveShowData()
+end
+
+Controls.GlobalConditionEnable.EventHandler = function(ctl)
+  if Loading then return end
+  GlobalCondition.enabled = ctl.Boolean
+  RefreshGlobalConditionVisibility()
+  if GlobalCondition.enabled then PopulateConditionControlChoices("GlobalConditionTarget", "GlobalConditionControl", GlobalCondition) end
+  MarkDirty(); SaveShowData()
+end
+Controls.GlobalConditionTarget.EventHandler = function(ctl)
+  if Loading then return end
+  if Controls.LockToggle.Boolean then ctl.String = GlobalCondition.target; return end
+  GlobalCondition.target = ctl.String
+  PopulateConditionControlChoices("GlobalConditionTarget", "GlobalConditionControl", GlobalCondition)
+  MarkDirty(); SaveShowData()
+end
+Controls.GlobalConditionControl.EventHandler = function(ctl)
+  if Loading then return end
+  if Controls.LockToggle.Boolean then ctl.String = GlobalCondition.control; return end
+  GlobalCondition.control = ctl.String
+  MarkDirty(); SaveShowData()
+end
+Controls.GlobalConditionRequired.EventHandler = function(ctl)
+  if Loading then return end
+  GlobalCondition.required = ctl.Boolean
+  ctl.Legend = ctl.Boolean and "Must be ON" or "Must be OFF"
+  MarkDirty(); SaveShowData()
+end
+
 Controls.AddActionButton.EventHandler = function()
   if Loading then return end
   if Controls.LockToggle.Boolean then return end
@@ -1409,6 +1650,7 @@ for i = 1, MaxCues do
   Cues[i] = {
     name = "Cue " .. i, notes = "", color = "#465261", armed = false, confirm = false,
     state = "idle", activeActions = 0, actions = {},
+    condition = { enabled = false, target = "", control = "", required = true },
   }
   for a = 1, MaxActions do
     Cues[i].actions[a] = { type = "none", target = "", control = "", value = "" }
@@ -1535,6 +1777,7 @@ Init = function()
       end)
     end
     for i = 1, NumUdp do PushUdpTargetToControls(i) end
+    PushGlobalConditionToControls()
     for i = 1, MaxCues do RefreshCueButtonColor(i) end
     RefreshSelectedCueChoices()
     SelectedCueIndex = 1

@@ -126,6 +126,37 @@ Switching **Select Cue** doesn't lose anything — every field writes straight
 into that cue's stored data as you edit it, and the editor bank just gets
 repointed to show whichever cue is currently selected.
 
+### Optional fire conditions
+
+Every cue can optionally require a condition to be met before it's allowed
+to fire — e.g. "only fire if this Block Controller's enable toggle is
+pressed" (or *not* pressed). This is entirely **off by default and never
+required** — a cue with **Condition** left off fires exactly as before,
+with zero extra configuration.
+
+- **Per-cue condition** (Show Editor page, in the Cue Editor card): flip
+  **Condition** on for the currently selected cue, then pick a **Target**
+  (a Device from the Devices page) and **Control** (auto-suggested from
+  that device's real controls, same as an action's Control field), and
+  **Must be ON / Must be OFF** for the state it needs to be in. A cue with
+  an active condition shows a small `*` after its name on the Live Show
+  grid, so you can tell at a glance which cues are gated.
+- **Global Condition** (Show Editor page, in the Global Settings card):
+  the same Target/Control/Required shape, but applies to **every** cue in
+  addition to whatever per-cue condition (if any) that cue also has. Also
+  off by default. Useful for a single "show is live" / "rehearsal lockout"
+  toggle that should gate the whole show at once, rather than configuring
+  the same condition on every cue individually.
+
+Conditions are checked **live**, right when a cue is pressed (via the cue
+grid or **GO**) — they read the referenced control's actual current
+`.Boolean` state at that moment, not a cached or stored value. A cue
+blocked by a condition doesn't fire any of its actions, doesn't count
+toward the 150ms debounce, and logs as `BLOCKED` (not `OK`/`ERROR`) with
+the specific reason shown in the status bar's error field. **PANIC** and
+**STOP ALL** always bypass conditions entirely, same as they bypass the
+normal cue path — they're an emergency override by design.
+
 **GO** (Live Show page) fires the "next cue" shown in the status bar and
 advances it. **STOP ALL** triggers the control named in **Player Stop
 Control Name** (Show Editor page, default `stop`) on every component
@@ -262,9 +293,15 @@ persistent mock control objects with real `Boolean`/`Value`/`Type` state
 (not just presence flags) to verify the auto Value editor: that a Boolean
 control swaps in the toggle and hides the text field, that a Trigger-type
 control hides both, and that toggling it actually writes `.Boolean` on the
-underlying mock control (not just the plugin's own stored string). The
-layout check also confirms every declared control appears on exactly one
-of the three pages (never more than one, never zero, except the
-intentionally-hidden `ShowData`). It has **not** been run inside actual
-Q-SYS Designer or against real hardware — do that before a live show, per
-the persistence note above.
+underlying mock control (not just the plugin's own stored string). Fire
+conditions are also covered: a cue with no condition configured fires
+exactly as before (proving the feature is truly optional); a cue with an
+unmet per-cue condition is blocked and logs `BLOCKED`, then fires once the
+mocked control's live state is flipped to satisfy it; and a Global
+Condition is shown to gate a cue that has no condition of its own, cleared
+afterward so it doesn't affect anything else, plus a round-trip through
+export/import. The layout check also confirms every declared control
+appears on exactly one of the three pages (never more than one, never
+zero, except the intentionally-hidden `ShowData`). It has **not** been run
+inside actual Q-SYS Designer or against real hardware — do that before a
+live show, per the persistence note above.
