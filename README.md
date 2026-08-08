@@ -20,89 +20,123 @@ extensions (`UdpSocket`, `Component`, `Controls`, `Timer`, `rapidjson`,
 2. Drag it onto the design canvas.
 3. Set its Properties (see below) to size the show, then wire up cues.
 
-The component has two pages (visible as tabs at the top of its properties/
-control panel in Designer):
+The component has three pages (visible as tabs at the top of its
+properties/control panel in Designer):
 
-- **Live Show** — a compact, card-based operator view: show/lock strip,
-  status bar, GO/STOP ALL/PANIC transport, the quick-fire cue grid, and a
-  live activity log. Sized to fit comfortably on one screen (~920px wide).
-- **Show Editor** — the full authoring surface: global stop/panic settings,
-  export/import, UDP target config, and the complete per-cue/per-action
-  editor table (one row per cue, every action's fields laid out left to
-  right). This page is deliberately wide — it scales with **Max Actions Per
-  Cue** and is meant to be viewed in a resized Schematic view or scrolled,
-  not to fit in a small pane. Everything on it is setup/authoring, not
-  something an operator touches mid-show, which is why it's split off the
-  Live Show page.
+- **Live Show** — the compact operator view: show/lock strip, status bar,
+  GO/STOP ALL/PANIC transport, the quick-fire cue grid, and a live activity
+  log. Sized to fit comfortably on one screen (~920px wide).
+- **Devices** — a curated list of Q-SYS components ("Devices") and UDP
+  targets. This is the only place the full, raw list of every component in
+  your design is shown; everywhere else (the Show Editor's action Target
+  dropdown) only sees the friendly names you define here. Keeps the editor
+  from being flooded with every gain block and router in the design.
+- **Show Editor** — pick **one** cue from a dropdown and edit it: name,
+  color, armed, confirm-before-fire, notes, and its actions. Actions are
+  revealed one at a time with **+ Add Action** (and removed with each row's
+  **X** button) instead of always showing every action slot for every cue —
+  so a 30-cue show with a handful of actions per cue doesn't fill the screen
+  with 100+ mostly-empty rows.
 
 Paging is purely a Designer-canvas display choice — every control behaves
-identically regardless of which page it's shown on, and the two pages
-share one consistent color palette (blue accent, green/amber/red for
-success/warning/danger) with card-style grouped sections and section
-headings.
+identically regardless of which page it's shown on. All three pages share
+one color palette (blue accent, green/amber/red for success/warning/danger)
+with card-style grouped sections and section headings.
 
 ## Properties
 
 | Property | Purpose | Default | Range |
 |---|---|---|---|
-| **Max Cues** | Size of the fixed cue grid/editor | 30 | 1–30 |
-| **Max Actions Per Cue** | Simultaneous actions per cue | 3 | 1–6 |
+| **Max Cues** | Size of the cue grid | 30 | 1–30 |
+| **Max Actions Per Cue** | Max actions any single cue can have | 3 | 1–6 |
+| **Max Devices** | Size of the curated component list (Devices page) | 12 | 0–24 |
 | **UDP Targets** | Number of configurable UDP devices | 6 | 0–12 |
 | **Show Debug** | Show the Lua debug window; also gates `print()` mirroring of errors/cue-fire log lines | false | — |
 
 Changing any of these **resizes the control set** (`GetControls` declares a
 static, fixed-size set of controls sized only from these Properties — the
-control count never changes at runtime). If you reduce a count after cues
-have been programmed, any cues/actions beyond the new limit are dropped from
-the visible control set the next time the component regenerates.
+control count never changes at runtime). Note the control count no longer
+scales with `Max Cues x Max Actions Per Cue` — there is one shared bank of
+`Max Actions Per Cue` action-editor controls that gets repointed at whichever
+cue is selected, not one per cue. A default configuration (30 cues, 3
+actions, 12 devices, 6 UDP targets) is ~120 controls, versus ~590 in the
+previous per-cue-grid design.
+
+## Setting up Devices (do this first)
+
+On the **Devices** page, each row picks:
+
+- **Friendly Name** — what you'll select in the Show Editor's Target
+  dropdown (e.g. `House Player`, `Lobby Display`).
+- **Q-SYS Component** — a dropdown of every named component in the design
+  (from `Component.GetComponents()`), i.e. the *real* component to bind to.
+
+Only components added here show up as Targets for `player_trigger` /
+`named_control_set` actions in the Show Editor — this is the curated list
+the brief asked for, so the action editor isn't a dropdown of every audio
+gain block and router in the building.
+
+UDP targets (Name/IP/Port) live on this same page for the same reason —
+they're setup, not something an operator edits mid-show.
 
 ## Programming a cue
 
-Each cue row in the editor has: **Name**, **Color** (`#RRGGBB`, used for the
-cue button's idle color), **Arm**, **Confirm** (require a double-press
-within 2s before firing — for destructive cues), **Notes** (run-sheet text,
-never fired), and one block per action slot:
+On the **Show Editor** page:
 
-- **Type**: `none` / `player_trigger` / `udp_send` / `named_control_set`
-- **Target**: component name (for `player_trigger` / `named_control_set`) or
-  UDP target name (for `udp_send`). This field is a dropdown auto-populated
-  from `Component.GetComponents()` (or the configured UDP target names) —
-  it also accepts free text.
-- **Control**: the Named Control on that component to act on
-  (`player_trigger` / `named_control_set` only). Auto-suggested from the
-  live component's own controls where possible; always editable as plain
-  text, since control names differ by component/Player type (see
-  "Assumptions" below).
-- **Value**: for `named_control_set`, one of `V:<number>` (sets `.Value`),
-  `P:<number>` (sets `.Position`, 0–1), `S:<text>` (sets `.String`), or `T`
-  / empty (calls `:Trigger()`). For `udp_send`, this is the **raw ASCII
-  payload** sent byte-for-byte (see "Assumptions").
+1. Pick a cue from **Select Cue**.
+2. Edit **Rename Cue**, **Color** (`#RRGGBB`, used for the cue button's idle
+   color), **Arm**, **Confirm** (require a double-press within 2s before
+   firing — for destructive cues), and **Notes** (run-sheet text, never
+   fired).
+3. Press **+ Add Action** to reveal an action row (up to **Max Actions Per
+   Cue**); press a row's **X** to remove it (later rows shift down to fill
+   the gap). Each visible row has:
+   - **Type**: `none` / `player_trigger` / `udp_send` / `named_control_set`
+   - **Target**: a Device name (for `player_trigger` / `named_control_set`)
+     or a UDP target name (for `udp_send`) — dropdown populated from the
+     **Devices** page, not the raw design.
+   - **Control**: the Named Control on that device to act on
+     (`player_trigger` / `named_control_set` only). Auto-suggested from the
+     live component's own controls via `Component.GetControls()`; always
+     editable as plain text too, since control names differ by
+     component/Player type (see "Assumptions" below).
+   - **Value**: for `named_control_set`, one of `V:<number>` (sets
+     `.Value`), `P:<number>` (sets `.Position`, 0–1), `S:<text>` (sets
+     `.String`), or `T` / empty (calls `:Trigger()`). For `udp_send`, this
+     is the **raw ASCII payload** sent byte-for-byte (see "Assumptions").
 
-**GO** fires the "next cue" shown in the status bar and advances it.
-**STOP ALL** triggers the control named in **Player Stop Control Name**
-(default `stop`) on every component referenced anywhere in the show.
-**PANIC** does the same and, if **Panic UDP Payload** is non-empty, sends
-that payload to every configured UDP target — bypassing the normal cue path
-entirely.
+Switching **Select Cue** doesn't lose anything — every field writes straight
+into that cue's stored data as you edit it, and the editor bank just gets
+repointed to show whichever cue is currently selected.
+
+**GO** (Live Show page) fires the "next cue" shown in the status bar and
+advances it. **STOP ALL** triggers the control named in **Player Stop
+Control Name** (Show Editor page, default `stop`) on every component
+referenced anywhere in the show. **PANIC** does the same and, if **Panic
+UDP Payload** is non-empty, sends that payload to every configured UDP
+target — bypassing the normal cue path entirely.
 
 ## Testing UDP sending
 
-1. Fill in one of the **UDP Targets** rows: Name, IP, Port.
-2. Set an action's Type to `udp_send`, Target to that target's Name, and
-   Value to the payload you want to send (plain ASCII, e.g. `PLAY`).
+1. On the **Devices** page, fill in one of the **UDP Targets** rows: Name,
+   IP, Port.
+2. On the **Show Editor** page, set an action's Type to `udp_send`, Target
+   to that target's Name, and Value to the payload you want to send (plain
+   ASCII, e.g. `PLAY`).
 3. Fire that cue and confirm the target device receives the packet (a
    packet capture on the Core's network interface, e.g. Wireshark filtering
    on `udp.port == <port>`, is the most reliable way to verify this without
    depending on the receiving device).
-4. If the device sends anything back to the same socket, its last
-   reply is shown (throttled to ~10 updates/sec) in that target's
-   **Status** field.
+4. If the device sends anything back to the same socket, its last reply is
+   shown (throttled to ~10 updates/sec) in that target's **Status** field
+   on the Devices page.
 
 ## Persistence — verify on real hardware before a live show
 
-The full show (cues, actions, UDP targets) is serialized to JSON into a
-hidden control (`ShowData`) every time you edit anything, and reloaded from
-it on plugin init. **This is not the same as surviving a Core reboot.**
+The full show (cues, actions, devices, UDP targets) is serialized to JSON
+into a hidden control (`ShowData`) every time you edit anything, and
+reloaded from it on plugin init. **This is not the same as surviving a Core
+reboot.**
 
 Q-SYS only persists a running Core's live control values across a reboot if
 you have used Designer's **Save to Core** (or otherwise deployed/saved the
@@ -119,14 +153,20 @@ in emulation.
 
 ## Export / Import
 
-- **Export** serializes the current show to the read-only **Export JSON**
-  box for manual copy (no filesystem access is available in the plugin
-  sandbox, so this is copy/paste only).
+- **Export** serializes the current show (cues, devices, UDP targets) to
+  the read-only **Export JSON** box for manual copy (no filesystem access
+  is available in the plugin sandbox, so this is copy/paste only).
 - **Import**: paste JSON into **Import JSON** and press **Import**. The
-  payload is fully validated (cue/action counts within the configured
-  limits, valid action types, valid IP/port formats) *before* anything is
-  applied — an invalid import is rejected with a specific reason and the
-  live show is left untouched.
+  payload is fully validated (cue/action/device counts within the
+  configured limits, valid action types, valid IP/port formats) *before*
+  anything is applied — an invalid import is rejected with a specific
+  reason and the live show is left untouched.
+
+> **Schema note**: as of this Devices-page redesign, a `player_trigger` /
+> `named_control_set` action's `target` field is a **Device friendly name**
+> (defined on the Devices page), not a raw Q-SYS component name. A show
+> exported from an earlier build of this plugin will need its action
+> targets renamed to match configured Device names before re-importing.
 
 ## Reliability notes
 
@@ -148,11 +188,19 @@ specified:
 1. **Player/component control names** (`player_trigger` /
    `named_control_set`): no specific Player type was specified, so control
    names are never hardcoded. The operator enters/selects them per action;
-   the plugin best-effort auto-populates the Control dropdown from the live
-   component's own controls via `Component.GetControls()`, but this is
-   wrapped in `pcall` and silently falls back to a plain text field if that
-   call's shape doesn't match what was assumed — see the comment above
-   `RefreshActionControlChoices` in the plugin source.
+   the plugin auto-populates the Control dropdown from the live component's
+   own controls via `Component.GetControls()`. **This previously failed
+   silently** — `Component.GetControls()` requires the actual
+   `Component.New()` proxy, not the lightweight descriptor returned by
+   `Component.GetComponents()`, and the earlier build passed the wrong one.
+   Fixed by resolving through `GetComponent()` (which returns/caches the
+   real proxy) before calling `Component.GetControls()` — see the comment
+   above `RefreshActionControlChoices` in the plugin source. This also
+   covers components whose controls are exposed via a plugin's own
+   `GetControls()`/pin wiring rather than built-in DSP blocks, since
+   `Component.GetControls()` doesn't distinguish the two once given a valid
+   proxy. The dropdown remains best-effort and `pcall`-wrapped; the Control
+   field always stays freely editable as plain text regardless.
 2. **UDP payload format**: raw ASCII, sent exactly as typed, with **no**
    automatically appended line terminator. If your device needs a CR/LF,
    include it explicitly (e.g. via a JSON import where the value string
@@ -174,10 +222,17 @@ mock of the Q-SYS Lua runtime (`Controls`, `Component`, `UdpSocket`, `Timer`,
 `Ping`, `rapidjson`) that actually executes `GetProperties` / `GetControls`
 / `GetPages` / `GetControlLayout` plus the full runtime path — cue firing,
 debounce, confirm-before-fire, per-action error isolation, UDP send,
-export/import round-trip, and import rejection — across both default and
-boundary (`Max Cues`/`Max Actions Per Cue`/`UDP Targets` at 1 and at their
-maximums) Property configurations. The layout check also confirms every
-declared control appears on exactly one of the two pages (never both, never
-neither, except the intentionally-hidden `ShowData`). It has **not** been
-run inside actual Q-SYS Designer or against real hardware — do that before
-a live show, per the persistence note above.
+device-resolved `player_trigger`/`named_control_set` actions, selecting
+between cues and confirming their action state stays isolated, adding and
+removing action rows, export/import round-trip, and import rejection —
+across both default and boundary (`Max Cues`/`Max Actions Per
+Cue`/`Max Devices`/`UDP Targets` at 1 and at their maximums) Property
+configurations. The mock specifically models the `Component.GetControls()`
+proxy-vs-descriptor distinction and asserts every call site passes the
+correct argument, and includes a component whose controls are only
+discoverable that way (simulating a "wired through code" component) to
+confirm the fix. The layout check also confirms every declared control
+appears on exactly one of the three pages (never more than one, never
+zero, except the intentionally-hidden `ShowData`). It has **not** been run
+inside actual Q-SYS Designer or against real hardware — do that before a
+live show, per the persistence note above.
