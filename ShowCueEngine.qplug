@@ -36,7 +36,7 @@ PluginInfo = {
 -- Hard ceilings so a mis-typed Property can never blow the control set up
 -- to an unreasonable size.
 local HARD_MAX_CUES = 30
-local HARD_MAX_ACTIONS = 6
+local HARD_MAX_ACTIONS = 25
 local HARD_MAX_DEVICES = 24
 local HARD_MAX_UDP = 12
 
@@ -57,7 +57,7 @@ function GetProperties()
     Type = "integer",
     Min = 1,
     Max = HARD_MAX_ACTIONS,
-    Value = 3,
+    Value = 4,
   })
   table.insert(props, {
     Name = "Max Devices",
@@ -159,6 +159,7 @@ function GetControls(props)
   add({ Name = "ActionTarget", ControlType = "Text", Count = maxActions })
   add({ Name = "ActionControl", ControlType = "Text", Count = maxActions })
   add({ Name = "ActionValue", ControlType = "Text", Count = maxActions })
+  add({ Name = "ActionValueBool", ControlType = "Button", ButtonType = "Toggle", Count = maxActions })
   add({ Name = "ActionRemove", ControlType = "Button", ButtonType = "Trigger", Count = maxActions })
 
   return ctrls
@@ -372,9 +373,16 @@ function GetControlLayout(props)
     y = y + 172 + 12
 
     -- Cue editor: ONE selected cue at a time -------------------------------------
+    -- Action rows can now run up to HARD_MAX_ACTIONS (25) tall. There is no
+    -- dedicated "scrollable list" control in the Q-SYS Lua layout API -- like
+    -- any component whose canvas is taller than the visible pane, Designer's
+    -- own Properties/Schematic panel scrolls it natively, the same mechanism
+    -- this page already relied on before. The card is sized to fit every row
+    -- so nothing is clipped; scrolling to reach lower rows is expected once
+    -- Max Actions Per Cue is set much above the default.
     local rowH = 24
     local editorH = 132 + maxActions * rowH
-    card(M, y, W - 2 * M, editorH, "CUE EDITOR")
+    card(M, y, W - 2 * M, editorH, "CUE EDITOR  (scrolls with the page once Max Actions Per Cue is large)")
     layout["SelectedCue"] = { PrettyName = "Select Cue", Style = "ComboBox", Position = { 28, y + 18 }, Size = { 240, 20 } }
     layout["CueEditColor"] = { PrettyName = "Cue Color (#RRGGBB)", Style = "Text", Position = { 280, y + 18 }, Size = { 80, 20 } }
     layout["CueEditArm"] = { PrettyName = "Armed", Style = "Button", ButtonStyle = "Toggle", Legend = "Arm", Color = Success, CornerRadius = 4, Position = { 368, y + 18 }, Size = { 56, 20 } }
@@ -386,7 +394,7 @@ function GetControlLayout(props)
     graphics[#graphics + 1] = { Type = "Text", Text = "Type", FontSize = 8, Position = { 28, y + 74 }, Size = { 110, 12 } }
     graphics[#graphics + 1] = { Type = "Text", Text = "Target (device / UDP target)", FontSize = 8, Position = { 146, y + 74 }, Size = { 160, 12 } }
     graphics[#graphics + 1] = { Type = "Text", Text = "Control", FontSize = 8, Position = { 314, y + 74 }, Size = { 140, 12 } }
-    graphics[#graphics + 1] = { Type = "Text", Text = "Value (V:/P:/S:/T or UDP payload)", FontSize = 8, Position = { 462, y + 74 }, Size = { 160, 12 } }
+    graphics[#graphics + 1] = { Type = "Text", Text = "Value (auto: toggle for Boolean controls, text otherwise)", FontSize = 8, Position = { 462, y + 74 }, Size = { 160, 12 } }
 
     local rowsY = y + 88
     for a = 1, maxActions do
@@ -394,7 +402,11 @@ function GetControlLayout(props)
       layout[key("ActionType", maxActions, a)] = { PrettyName = string.format("Action %d~Type", a), Style = "ComboBox", Position = { 28, ry }, Size = { 110, 20 } }
       layout[key("ActionTarget", maxActions, a)] = { PrettyName = string.format("Action %d~Target", a), Style = "ComboBox", Position = { 146, ry }, Size = { 160, 20 } }
       layout[key("ActionControl", maxActions, a)] = { PrettyName = string.format("Action %d~Control", a), Style = "ComboBox", Position = { 314, ry }, Size = { 140, 20 } }
+      -- ActionValue (free text) and ActionValueBool (toggle) occupy the exact
+      -- same rect -- only one is ever visible at a time (runtime picks based
+      -- on the selected control's discovered Type), so they swap seamlessly.
       layout[key("ActionValue", maxActions, a)] = { PrettyName = string.format("Action %d~Value", a), Style = "Text", Position = { 462, ry }, Size = { 160, 20 } }
+      layout[key("ActionValueBool", maxActions, a)] = { PrettyName = string.format("Action %d~Value (Boolean)", a), Style = "Button", ButtonStyle = "Toggle", Legend = "FALSE", Color = Success, OffColor = { 150, 155, 162 }, CornerRadius = 4, Position = { 462, ry }, Size = { 160, 20 } }
       layout[key("ActionRemove", maxActions, a)] = { PrettyName = string.format("Action %d~Remove", a), Style = "Button", ButtonStyle = "Trigger", Legend = "X", Color = Danger, CornerRadius = 4, Position = { 630, ry }, Size = { 30, 20 } }
     end
     layout["AddActionButton"] = { PrettyName = "Add Action", Style = "Button", ButtonStyle = "Trigger", Legend = "+ Add Action", Color = Accent, CornerRadius = 4, Position = { 28, rowsY + maxActions * rowH + 8 }, Size = { 130, 22 } }
@@ -441,8 +453,8 @@ local StateColors = {
 local dbg, MarkDirty, SaveShowData, LoadShowData, ApplyShowTable, BuildShowTable, ValidateShowTable
 local ClampActionType, PushUdpTargetToControls
 local GetComponent, RebuildComponentCache, AllComponentNameList, DeviceNameList, UdpTargetNameList
-local ResolveDeviceComponent
-local RefreshActionTargetChoices, RefreshActionControlChoices, RefreshVisibleActionChoices
+local ResolveDeviceComponent, FindControlDescriptor
+local RefreshActionTargetChoices, RefreshActionControlChoices, RefreshVisibleActionChoices, RefreshActionValueEditor
 local RefreshCueButtonColor, RefreshSelectedCueChoices, RefreshActionRowVisibility
 local SelectCue, PushSelectedCueToEditor
 local DoPlayerTrigger, DoNamedControlSet, DoUdpSend, DispatchAction, ParseValueSpec
@@ -502,14 +514,17 @@ end
 
 ParseValueSpec = function(spec)
   -- named_control_set value syntax: "V:<num>"=.Value  "P:<num>"=.Position (0..1)
-  -- "S:<text>"=.String  "T" / "" / anything unrecognized = :Trigger()
+  -- "S:<text>"=.String  "B:true"/"B:false"=.Boolean (written by the auto Value
+  -- toggle -- see RefreshActionValueEditor)  "T" / "" / anything unrecognized
+  -- = :Trigger()
   if spec == nil or spec == "" then return "trigger", nil end
   local upper = spec:upper()
   if upper == "T" or upper == "TRIGGER" then return "trigger", nil end
-  local mode, data = spec:match("^([VPS]):(.*)$")
+  local mode, data = spec:match("^([VPSB]):(.*)$")
   if mode == "V" then return "value", tonumber(data)
   elseif mode == "P" then return "position", tonumber(data)
   elseif mode == "S" then return "string", data
+  elseif mode == "B" then return "boolean", (data == "true")
   end
   return "trigger", nil
 end
@@ -628,6 +643,58 @@ RefreshVisibleActionChoices = function()
   for a = 1, c.activeActions do
     RefreshActionTargetChoices(a)
   end
+end
+
+-- Looks up one control's descriptor (Name/Value/String/Position/Type/
+-- Direction/MinValue/MaxValue/...) on a real component via the same
+-- Component.GetControls(proxy) call used above. Used to auto-detect whether
+-- a named_control_set action's Value editor should be a Boolean toggle or a
+-- free-text field.
+FindControlDescriptor = function(compName, controlName)
+  local comp = GetComponent(compName)
+  if not comp then return nil end
+  local ok, list = pcall(Component.GetControls, comp)
+  if not ok or type(list) ~= "table" then return nil end
+  for _, ctrl in ipairs(list) do
+    if ctrl.Name == controlName then return ctrl end
+  end
+  return nil
+end
+
+-- Auto-adjusts the Value editor for action slot `a`: a Boolean toggle for
+-- Boolean controls, hidden entirely for Trigger controls or player_trigger
+-- (which never has a value), and the plain text field otherwise (also used
+-- for udp_send's raw payload). ActionValue and ActionValueBool occupy the
+-- same on-screen rect, so only one is ever visible at once.
+RefreshActionValueEditor = function(a)
+  local act = Cues[SelectedCueIndex].actions[a]
+  local showText, showBool = false, false
+  if act.type == "udp_send" then
+    showText = true
+  elseif act.type == "named_control_set" then
+    local compName = ResolveDeviceComponent(act.target)
+    local desc = nil
+    if compName and compName ~= "" and act.control ~= "" then
+      desc = FindControlDescriptor(compName, act.control)
+    end
+    if desc and desc.Type == "Boolean" then
+      showBool = true
+    elseif desc and desc.Type == "Trigger" then
+      showText, showBool = false, false
+    else
+      showText = true
+    end
+  end
+  pcall(function()
+    Controls.ActionValue[a].IsInvisible = not showText
+    Controls.ActionValueBool[a].IsInvisible = not showBool
+    if showBool then
+      local mode, data = ParseValueSpec(act.value)
+      local boolVal = (mode == "boolean" and data) or false
+      Controls.ActionValueBool[a].Boolean = boolVal
+      Controls.ActionValueBool[a].Legend = boolVal and "TRUE" or "FALSE"
+    end
+  end)
 end
 
 --=============================================================================
@@ -853,9 +920,17 @@ RefreshActionRowVisibility = function()
       Controls.ActionType[a].IsInvisible = not visible
       Controls.ActionTarget[a].IsInvisible = not visible
       Controls.ActionControl[a].IsInvisible = not visible
-      Controls.ActionValue[a].IsInvisible = not visible
       Controls.ActionRemove[a].IsInvisible = not visible
     end)
+    if visible then
+      -- Active row: let RefreshActionValueEditor decide Value vs. Value(Boolean).
+      RefreshActionValueEditor(a)
+    else
+      pcall(function()
+        Controls.ActionValue[a].IsInvisible = true
+        Controls.ActionValueBool[a].IsInvisible = true
+      end)
+    end
   end
   pcall(function() Controls.AddActionButton.IsDisabled = (c.activeActions >= MaxActions) end)
 end
@@ -1035,6 +1110,7 @@ DoNamedControlSet = function(act)
     if mode == "value" then ctrl.Value = data
     elseif mode == "position" then ctrl.Position = data
     elseif mode == "string" then ctrl.String = data
+    elseif mode == "boolean" then ctrl.Boolean = data
     else ctrl:Trigger()
     end
   end)
@@ -1338,6 +1414,7 @@ for a = 1, MaxActions do
     if Controls.LockToggle.Boolean then ctl.String = Cues[SelectedCueIndex].actions[slotIdx].type; return end
     Cues[SelectedCueIndex].actions[slotIdx].type = ClampActionType(ctl.String)
     RefreshActionTargetChoices(slotIdx)
+    RefreshActionValueEditor(slotIdx)
     MarkDirty(); SaveShowData()
   end
   Controls.ActionTarget[slotIdx].EventHandler = function(ctl)
@@ -1345,18 +1422,31 @@ for a = 1, MaxActions do
     if Controls.LockToggle.Boolean then ctl.String = Cues[SelectedCueIndex].actions[slotIdx].target; return end
     Cues[SelectedCueIndex].actions[slotIdx].target = ctl.String
     RefreshActionControlChoices(slotIdx)
+    RefreshActionValueEditor(slotIdx)
     MarkDirty(); SaveShowData()
   end
   Controls.ActionControl[slotIdx].EventHandler = function(ctl)
     if Loading then return end
     if Controls.LockToggle.Boolean then ctl.String = Cues[SelectedCueIndex].actions[slotIdx].control; return end
     Cues[SelectedCueIndex].actions[slotIdx].control = ctl.String
+    RefreshActionValueEditor(slotIdx)
     MarkDirty(); SaveShowData()
   end
   Controls.ActionValue[slotIdx].EventHandler = function(ctl)
     if Loading then return end
     if Controls.LockToggle.Boolean then ctl.String = Cues[SelectedCueIndex].actions[slotIdx].value; return end
     Cues[SelectedCueIndex].actions[slotIdx].value = ctl.String
+    MarkDirty(); SaveShowData()
+  end
+  Controls.ActionValueBool[slotIdx].EventHandler = function(ctl)
+    if Loading then return end
+    if Controls.LockToggle.Boolean then
+      local mode, data = ParseValueSpec(Cues[SelectedCueIndex].actions[slotIdx].value)
+      ctl.Boolean = (mode == "boolean" and data) or false
+      return
+    end
+    Cues[SelectedCueIndex].actions[slotIdx].value = ctl.Boolean and "B:true" or "B:false"
+    ctl.Legend = ctl.Boolean and "TRUE" or "FALSE"
     MarkDirty(); SaveShowData()
   end
   Controls.ActionRemove[slotIdx].EventHandler = function()

@@ -48,19 +48,27 @@ with card-style grouped sections and section headings.
 | Property | Purpose | Default | Range |
 |---|---|---|---|
 | **Max Cues** | Size of the cue grid | 30 | 1–30 |
-| **Max Actions Per Cue** | Max actions any single cue can have | 3 | 1–6 |
+| **Max Actions Per Cue** | Max actions any single cue can have | 4 | 1–25 |
 | **Max Devices** | Size of the curated component list (Devices page) | 12 | 0–24 |
 | **UDP Targets** | Number of configurable UDP devices | 6 | 0–12 |
 | **Show Debug** | Show the Lua debug window; also gates `print()` mirroring of errors/cue-fire log lines | false | — |
 
 Changing any of these **resizes the control set** (`GetControls` declares a
 static, fixed-size set of controls sized only from these Properties — the
-control count never changes at runtime). Note the control count no longer
-scales with `Max Cues x Max Actions Per Cue` — there is one shared bank of
+control count never changes at runtime). Note the control count doesn't
+scale with `Max Cues x Max Actions Per Cue` — there is one shared bank of
 `Max Actions Per Cue` action-editor controls that gets repointed at whichever
-cue is selected, not one per cue. A default configuration (30 cues, 3
-actions, 12 devices, 6 UDP targets) is ~120 controls, versus ~590 in the
-previous per-cue-grid design.
+cue is selected, not one per cue. A default configuration (30 cues, 4
+actions, 12 devices, 6 UDP targets) is ~130 controls; even at the maximum
+(30/25/24/12) it's ~305, versus ~590 in the original per-cue-grid design.
+
+**Max Actions Per Cue goes up to 25.** There's no dedicated "scrollable
+list" widget in the Q-SYS Lua layout API — a component whose canvas is
+taller than the visible pane just scrolls natively inside Designer's
+Properties/Schematic panel, the same way this page already behaved before.
+Setting this Property well above the default makes the Cue Editor card tall
+enough that you'll be scrolling to reach the lower action rows, which is
+expected, not a bug.
 
 ## Setting up Devices (do this first)
 
@@ -100,10 +108,19 @@ On the **Show Editor** page:
      live component's own controls via `Component.GetControls()`; always
      editable as plain text too, since control names differ by
      component/Player type (see "Assumptions" below).
-   - **Value**: for `named_control_set`, one of `V:<number>` (sets
-     `.Value`), `P:<number>` (sets `.Position`, 0–1), `S:<text>` (sets
-     `.String`), or `T` / empty (calls `:Trigger()`). For `udp_send`, this
-     is the **raw ASCII payload** sent byte-for-byte (see "Assumptions").
+   - **Value**: **auto-adjusts to the selected control's type.** Once a
+     `named_control_set` action has a Control picked, the plugin looks up
+     that control's real type (via the same `Component.GetControls()` call)
+     and swaps the editor accordingly: a **TRUE/FALSE toggle** for Boolean
+     controls (mute, power, etc. — writes `.Boolean` directly), **hidden
+     entirely** for Trigger-type controls (nothing to set, only fire), or
+     the free-text field for everything else (Float/Integer/Text/Position),
+     using `V:<number>` (sets `.Value`), `P:<number>` (sets `.Position`,
+     0–1), or `S:<text>` (sets `.String`). If the control's type can't be
+     determined (unresolved target, lookup failure, etc.) it falls back to
+     the free-text field, `T` / empty for either meaning "just `:Trigger()`
+     it". For `udp_send`, Value is always the free-text field — the **raw
+     ASCII payload** sent byte-for-byte (see "Assumptions").
 
 Switching **Select Cue** doesn't lose anything — every field writes straight
 into that cue's stored data as you edit it, and the editor bank just gets
@@ -200,7 +217,10 @@ specified:
    `GetControls()`/pin wiring rather than built-in DSP blocks, since
    `Component.GetControls()` doesn't distinguish the two once given a valid
    proxy. The dropdown remains best-effort and `pcall`-wrapped; the Control
-   field always stays freely editable as plain text regardless.
+   field always stays freely editable as plain text regardless. The same
+   fixed lookup also powers the auto Boolean-toggle-vs-text-field Value
+   editor described above (`RefreshActionValueEditor`), keyed off each
+   control descriptor's `.Type` field (`Boolean`/`Trigger`/anything else).
 2. **UDP payload format**: raw ASCII, sent exactly as typed, with **no**
    automatically appended line terminator. If your device needs a CR/LF,
    include it explicitly (e.g. via a JSON import where the value string
@@ -226,13 +246,19 @@ device-resolved `player_trigger`/`named_control_set` actions, selecting
 between cues and confirming their action state stays isolated, adding and
 removing action rows, export/import round-trip, and import rejection —
 across both default and boundary (`Max Cues`/`Max Actions Per
-Cue`/`Max Devices`/`UDP Targets` at 1 and at their maximums) Property
-configurations. The mock specifically models the `Component.GetControls()`
-proxy-vs-descriptor distinction and asserts every call site passes the
-correct argument, and includes a component whose controls are only
-discoverable that way (simulating a "wired through code" component) to
-confirm the fix. The layout check also confirms every declared control
-appears on exactly one of the three pages (never more than one, never
-zero, except the intentionally-hidden `ShowData`). It has **not** been run
-inside actual Q-SYS Designer or against real hardware — do that before a
-live show, per the persistence note above.
+Cue`/`Max Devices`/`UDP Targets` at 1 and at their maximums, including
+`Max Actions Per Cue` = 25) Property configurations. The mock specifically
+models the `Component.GetControls()` proxy-vs-descriptor distinction and
+asserts every call site passes the correct argument, and includes a
+component whose controls are only discoverable that way (simulating a
+"wired through code" component) to confirm the fix. It also carries
+persistent mock control objects with real `Boolean`/`Value`/`Type` state
+(not just presence flags) to verify the auto Value editor: that a Boolean
+control swaps in the toggle and hides the text field, that a Trigger-type
+control hides both, and that toggling it actually writes `.Boolean` on the
+underlying mock control (not just the plugin's own stored string). The
+layout check also confirms every declared control appears on exactly one
+of the three pages (never more than one, never zero, except the
+intentionally-hidden `ShowData`). It has **not** been run inside actual
+Q-SYS Designer or against real hardware — do that before a live show, per
+the persistence note above.
