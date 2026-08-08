@@ -1,0 +1,1130 @@
+--[[
+  Show Control ~ Cue Engine
+  ---------------------------------------------------------------------------
+  A live-show cue engine for Q-SYS Designer. Up to 30 operator-programmable
+  cues, each firing multiple simultaneous actions:
+    - player_trigger      : invoke a control (e.g. Play/Stop/Cue) on a named
+                             Media/Stream Player (or any) component
+    - udp_send             : send an ASCII payload to a configured UDP target
+    - named_control_set    : set .Value / .Position / .String or :Trigger()
+                             on any Named Control of any component
+
+  Only documented Q-SYS Lua extensions are used: UdpSocket, Component,
+  Controls, Timer, rapidjson, Ping. See README.md for install/config notes
+  and a list of flagged assumptions (search this file for "ASSUMPTION").
+---------------------------------------------------------------------------]]
+
+PluginInfo = {
+  Name = "Show Control~CueEngine",
+  Version = "1.0.0",
+  Id = "com.yourcompany.showcontrol.cueengine",
+  Description = "Live-show cue engine: up to 30 cues, each firing multiple simultaneous actions (player triggers, UDP, named controls).",
+  ShowDebug = true,
+}
+
+-- Hard ceilings so a mis-typed Property can never blow the control set up
+-- to an unreasonable size.
+local HARD_MAX_CUES = 30
+local HARD_MAX_ACTIONS = 6
+local HARD_MAX_UDP = 12
+
+--=============================================================================
+-- Design time: Properties
+--=============================================================================
+function GetProperties()
+  local props = {}
+  table.insert(props, {
+    Name = "Max Cues",
+    Type = "integer",
+    Min = 1,
+    Max = HARD_MAX_CUES,
+    Value = HARD_MAX_CUES,
+  })
+  table.insert(props, {
+    Name = "Max Actions Per Cue",
+    Type = "integer",
+    Min = 1,
+    Max = HARD_MAX_ACTIONS,
+    Value = 3,
+  })
+  table.insert(props, {
+    Name = "UDP Targets",
+    Type = "integer",
+    Min = 0,
+    Max = HARD_MAX_UDP,
+    Value = 6,
+  })
+  table.insert(props, {
+    Name = "Show Debug",
+    Type = "boolean",
+    Value = false,
+  })
+  return props
+end
+
+--=============================================================================
+-- Design time: Controls
+--
+-- This is a STATIC, fixed-size control set sized only from the Properties
+-- above. It never changes at runtime -- editing cues/actions at runtime only
+-- changes the *contents* of these pre-declared controls, never their count.
+--=============================================================================
+function GetControls(props)
+  local maxCues = props["Max Cues"].Value
+  local maxActions = props["Max Actions Per Cue"].Value
+  local numUdp = props["UDP Targets"].Value
+  local maxSlots = maxCues * maxActions
+
+  local ctrls = {}
+  local function add(t) table.insert(ctrls, t) end
+
+  -- Transport / global status -------------------------------------------------
+  add({ Name = "GoButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
+  add({ Name = "StopAllButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
+  add({ Name = "PanicButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
+
+  add({ Name = "StatusLed", ControlType = "Indicator", IndicatorType = "Status", Count = 1 })
+  add({ Name = "StatusText", ControlType = "Text", Count = 1 })
+  add({ Name = "StatusStateText", ControlType = "Text", Count = 1 })
+  add({ Name = "NextCueText", ControlType = "Text", Count = 1 })
+  add({ Name = "ErrorLed", ControlType = "Indicator", IndicatorType = "Status", Count = 1 })
+  add({ Name = "ErrorText", ControlType = "Text", Count = 1 })
+
+  add({ Name = "ShowNameText", ControlType = "Text", Count = 1 })
+  add({ Name = "LastModifiedText", ControlType = "Text", Count = 1 })
+  add({ Name = "UnsavedLed", ControlType = "Indicator", IndicatorType = "Status", Count = 1 })
+  add({ Name = "LockToggle", ControlType = "Button", ButtonType = "Toggle", Count = 1 })
+
+  add({ Name = "GlobalStopControlName", ControlType = "Text", Count = 1 })
+  add({ Name = "PanicUdpPayload", ControlType = "Text", Count = 1 })
+
+  -- Hidden persistence control (never placed in GetControlLayout) -------------
+  add({ Name = "ShowData", ControlType = "Text", Count = 1 })
+
+  -- Export / Import / Log ------------------------------------------------------
+  add({ Name = "ExportData", ControlType = "Text", Count = 1 })
+  add({ Name = "ExportButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
+  add({ Name = "ImportData", ControlType = "Text", Count = 1 })
+  add({ Name = "ImportButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
+  add({ Name = "ImportErrorText", ControlType = "Text", Count = 1 })
+  add({ Name = "CueLogText", ControlType = "Text", Count = 1 })
+
+  -- UDP targets (operator-editable at runtime; count fixed by Property) -------
+  if numUdp > 0 then
+    add({ Name = "UdpTargetName", ControlType = "Text", Count = numUdp })
+    add({ Name = "UdpTargetIp", ControlType = "Text", Count = numUdp })
+    add({ Name = "UdpTargetPort", ControlType = "Knob", ControlUnit = "Integer", Min = 1, Max = 65535, Count = numUdp })
+    add({ Name = "UdpTargetStatus", ControlType = "Text", Count = numUdp })
+  end
+
+  -- Cue-level controls ----------------------------------------------------------
+  add({ Name = "CueButton", ControlType = "Button", ButtonType = "Trigger", Count = maxCues })
+  add({ Name = "CueArm", ControlType = "Button", ButtonType = "Toggle", Count = maxCues })
+  add({ Name = "CueConfirm", ControlType = "Button", ButtonType = "Toggle", Count = maxCues })
+  add({ Name = "CueName", ControlType = "Text", Count = maxCues })
+  add({ Name = "CueNotes", ControlType = "Text", Count = maxCues })
+  add({ Name = "CueColor", ControlType = "Text", Count = maxCues })
+
+  -- Action-level controls (flattened cue*action slots) ---------------------------
+  add({ Name = "ActionType", ControlType = "Text", Count = maxSlots })
+  add({ Name = "ActionTarget", ControlType = "Text", Count = maxSlots })
+  add({ Name = "ActionControl", ControlType = "Text", Count = maxSlots })
+  add({ Name = "ActionValue", ControlType = "Text", Count = maxSlots })
+
+  return ctrls
+end
+
+--=============================================================================
+-- Design time: Layout
+--=============================================================================
+function GetControlLayout(props)
+  local maxCues = props["Max Cues"].Value
+  local maxActions = props["Max Actions Per Cue"].Value
+  local numUdp = props["UDP Targets"].Value
+  local maxSlots = maxCues * maxActions
+
+  local layout = {}
+  local graphics = {}
+
+  -- Q-SYS addresses arrayed controls in the layout table as "Name" (Count==1)
+  -- or "Name N" (Count>1, 1-based, space-separated) -- NOT "Name[N]".
+  local function key(name, count, i)
+    if count <= 1 then return name end
+    return name .. " " .. i
+  end
+
+  graphics[#graphics + 1] = {
+    Type = "Header", Text = "Show Cue Engine", HTextAlign = "Left",
+    Position = { 8, 0 }, Size = { 400, 16 },
+  }
+
+  -- Header row ------------------------------------------------------------------
+  layout["ShowNameText"] = { PrettyName = "Show Name", Style = "Text", Position = { 8, 20 }, Size = { 220, 18 } }
+  layout["LastModifiedText"] = { PrettyName = "Last Modified", Style = "Text", Position = { 236, 20 }, Size = { 160, 18 } }
+  layout["UnsavedLed"] = { PrettyName = "Unsaved Changes", Style = "Indicator", Position = { 404, 20 }, Size = { 18, 18 } }
+  graphics[#graphics + 1] = { Type = "Text", Text = "Unsaved", FontSize = 9, Position = { 426, 20 }, Size = { 60, 18 } }
+  layout["LockToggle"] = {
+    PrettyName = "Lock Edits", Style = "Button", ButtonStyle = "Toggle", Legend = "Lock",
+    Color = { 200, 160, 40 }, Position = { 494, 20 }, Size = { 60, 18 },
+  }
+
+  -- Status bar --------------------------------------------------------------------
+  layout["StatusLed"] = { PrettyName = "Status", Style = "Indicator", Position = { 8, 42 }, Size = { 18, 18 } }
+  layout["StatusText"] = { PrettyName = "Status Text (Cue N: Name)", Style = "Text", Position = { 30, 42 }, Size = { 200, 18 } }
+  layout["StatusStateText"] = { PrettyName = "Status State (Ready/Firing/Error)", Style = "Text", Position = { 236, 42 }, Size = { 100, 18 } }
+  layout["NextCueText"] = { PrettyName = "Next Cue", Style = "Text", Position = { 340, 42 }, Size = { 180, 18 } }
+  layout["ErrorLed"] = { PrettyName = "Error", Style = "Indicator", Position = { 524, 42 }, Size = { 18, 18 } }
+  layout["ErrorText"] = { PrettyName = "Error Text", Style = "Text", Position = { 546, 42 }, Size = { 300, 18 } }
+
+  -- Transport -----------------------------------------------------------------------
+  layout["GoButton"] = { PrettyName = "Go", Style = "Button", ButtonStyle = "Trigger", Legend = "GO", Color = { 0, 159, 60 }, Position = { 8, 64 }, Size = { 70, 26 } }
+  layout["StopAllButton"] = { PrettyName = "Stop All", Style = "Button", ButtonStyle = "Trigger", Legend = "STOP ALL", Color = { 200, 160, 40 }, Position = { 84, 64 }, Size = { 90, 26 } }
+  layout["PanicButton"] = { PrettyName = "Panic", Style = "Button", ButtonStyle = "Trigger", Legend = "PANIC", Color = { 200, 30, 30 }, Position = { 180, 64 }, Size = { 90, 26 } }
+  layout["GlobalStopControlName"] = { PrettyName = "Player Stop Control Name", Style = "Text", Position = { 280, 64 }, Size = { 150, 26 } }
+  layout["PanicUdpPayload"] = { PrettyName = "Panic UDP Payload", Style = "Text", Position = { 436, 64 }, Size = { 200, 26 } }
+
+  -- Cue grid (quick-fire) --------------------------------------------------------
+  local gridCols = 6
+  local gridX, gridY = 8, 100
+  local cellW, cellH, gap = 96, 40, 4
+  for i = 1, maxCues do
+    local col = (i - 1) % gridCols
+    local row = math.floor((i - 1) / gridCols)
+    layout[key("CueButton", maxCues, i)] = {
+      PrettyName = string.format("Cue %d~Fire", i),
+      Style = "Button", ButtonStyle = "Trigger",
+      Legend = tostring(i),
+      Color = { 80, 90, 100 },
+      Position = { gridX + col * (cellW + gap), gridY + row * (cellH + gap) },
+      Size = { cellW, cellH },
+    }
+  end
+  local gridRows = math.ceil(maxCues / gridCols)
+  local afterGridY = gridY + gridRows * (cellH + gap) + 10
+
+  -- Export / Import / Log --------------------------------------------------------
+  layout["ExportButton"] = { PrettyName = "Export Show", Style = "Button", ButtonStyle = "Trigger", Legend = "Export", Position = { 8, afterGridY }, Size = { 80, 18 } }
+  layout["ExportData"] = { PrettyName = "Export JSON (copy this)", Style = "TextBox", Position = { 8, afterGridY + 20 }, Size = { 300, 90 } }
+  layout["ImportButton"] = { PrettyName = "Import Show", Style = "Button", ButtonStyle = "Trigger", Legend = "Import", Position = { 316, afterGridY }, Size = { 80, 18 } }
+  layout["ImportData"] = { PrettyName = "Import JSON (paste here)", Style = "TextBox", Position = { 316, afterGridY + 20 }, Size = { 300, 90 } }
+  layout["ImportErrorText"] = { PrettyName = "Import Error", Style = "Text", Position = { 316, afterGridY + 112 }, Size = { 300, 18 } }
+  layout["CueLogText"] = { PrettyName = "Cue Fire Log", Style = "TextBox", Position = { 624, afterGridY }, Size = { 280, 130 } }
+
+  local udpY = afterGridY + 150
+  if numUdp > 0 then
+    graphics[#graphics + 1] = { Type = "Text", Text = "UDP Targets", FontSize = 10, FontStyle = "Bold", Position = { 8, udpY - 16 }, Size = { 200, 14 } }
+    for i = 1, numUdp do
+      local y = udpY + (i - 1) * 20
+      layout[key("UdpTargetName", numUdp, i)] = { PrettyName = string.format("UDP Target %d~Name", i), Style = "Text", Position = { 8, y }, Size = { 120, 18 } }
+      layout[key("UdpTargetIp", numUdp, i)] = { PrettyName = string.format("UDP Target %d~IP", i), Style = "Text", Position = { 132, y }, Size = { 110, 18 } }
+      layout[key("UdpTargetPort", numUdp, i)] = { PrettyName = string.format("UDP Target %d~Port", i), Style = "TextBox", TextBoxStyle = "Meter", Position = { 246, y }, Size = { 70, 18 } }
+      layout[key("UdpTargetStatus", numUdp, i)] = { PrettyName = string.format("UDP Target %d~Status", i), Style = "Text", Position = { 320, y }, Size = { 140, 18 } }
+    end
+  end
+  local afterUdpY = udpY + (numUdp > 0 and (numUdp * 20 + 20) or 4)
+
+  -- Cue editor: one row per cue, Name/Color/Arm/Confirm/Notes then N action groups
+  graphics[#graphics + 1] = { Type = "Text", Text = "Cue Editor", FontSize = 10, FontStyle = "Bold", Position = { 8, afterUdpY - 16 }, Size = { 200, 14 } }
+  local rowY = afterUdpY
+  local rowH = 20
+  for c = 1, maxCues do
+    local y = rowY + (c - 1) * rowH
+    local x = 8
+    graphics[#graphics + 1] = { Type = "Text", Text = tostring(c), FontSize = 9, HTextAlign = "Right", Position = { x, y }, Size = { 20, 18 } }
+    x = x + 24
+    layout[key("CueName", maxCues, c)] = { PrettyName = string.format("Cue %d~Name", c), Style = "Text", Position = { x, y }, Size = { 140, 18 } }
+    x = x + 144
+    layout[key("CueColor", maxCues, c)] = { PrettyName = string.format("Cue %d~Color (#RRGGBB)", c), Style = "Text", Position = { x, y }, Size = { 64, 18 } }
+    x = x + 68
+    layout[key("CueArm", maxCues, c)] = { PrettyName = string.format("Cue %d~Armed", c), Style = "Button", ButtonStyle = "Toggle", Legend = "Arm", Color = { 0, 159, 60 }, Position = { x, y }, Size = { 40, 18 } }
+    x = x + 44
+    layout[key("CueConfirm", maxCues, c)] = { PrettyName = string.format("Cue %d~Confirm Before Fire", c), Style = "Button", ButtonStyle = "Toggle", Legend = "Cfm", Color = { 200, 160, 40 }, Position = { x, y }, Size = { 40, 18 } }
+    x = x + 44
+    layout[key("CueNotes", maxCues, c)] = { PrettyName = string.format("Cue %d~Notes (run sheet)", c), Style = "Text", Position = { x, y }, Size = { 170, 18 } }
+    x = x + 176
+    for a = 1, maxActions do
+      local s = (c - 1) * maxActions + a
+      layout[key("ActionType", maxSlots, s)] = { PrettyName = string.format("Cue %d~Action %d~Type", c, a), Style = "ComboBox", Position = { x, y }, Size = { 92, 18 } }
+      x = x + 96
+      layout[key("ActionTarget", maxSlots, s)] = { PrettyName = string.format("Cue %d~Action %d~Target (component / UDP target name)", c, a), Style = "ComboBox", Position = { x, y }, Size = { 130, 18 } }
+      x = x + 134
+      layout[key("ActionControl", maxSlots, s)] = { PrettyName = string.format("Cue %d~Action %d~Control name", c, a), Style = "ComboBox", Position = { x, y }, Size = { 110, 18 } }
+      x = x + 114
+      layout[key("ActionValue", maxSlots, s)] = { PrettyName = string.format("Cue %d~Action %d~Value (V:/P:/S:/T or UDP payload)", c, a), Style = "Text", Position = { x, y }, Size = { 120, 18 } }
+      x = x + 128
+    end
+  end
+
+  return layout, graphics
+end
+
+--=============================================================================
+-- Runtime
+-- Design-time editing (Designer canvas open, no live Controls table) must
+-- never execute runtime logic -- everything below is guarded by `if Controls`.
+--=============================================================================
+if Controls then
+
+local rapidjson = require("rapidjson")
+
+local MaxCues = Properties["Max Cues"].Value
+local MaxActions = Properties["Max Actions Per Cue"].Value
+local NumUdp = Properties["UDP Targets"].Value
+local MaxSlots = MaxCues * MaxActions
+local DebugOn = Properties["Show Debug"].Value
+
+local ActionTypes = { "none", "player_trigger", "udp_send", "named_control_set" }
+local ActionTypeSet = {}
+for _, t in ipairs(ActionTypes) do ActionTypeSet[t] = true end
+
+local StateColors = {
+  armed = "#2E6DA4",
+  firing = "#F0A500",
+  error = "#C62828",
+  ready = "#1FA34C",
+  neutral = "#555555",
+}
+
+-- ----------------------------------------------------------------------------
+-- Forward-declared locals so all runtime functions can freely reference each
+-- other regardless of definition order.
+-- ----------------------------------------------------------------------------
+local dbg, MarkDirty, SaveShowData, LoadShowData, ApplyShowTable, BuildShowTable, ValidateShowTable
+local ClampActionType, PushCueToControls, PushUdpTargetToControls
+local GetComponent, RebuildComponentCache, ComponentNameList, UdpTargetNameList
+local RefreshActionTargetChoices, RefreshActionControlChoices, RefreshCueButtonColor
+local DoPlayerTrigger, DoNamedControlSet, DoUdpSend, DispatchAction, ParseValueSpec
+local FindUdpTargetByName, OpenUdpSocket
+local SetStatusMessage, SetError, UpdateStatus, LogCueFire
+local FireCueNow, OnCueButtonPressed, StopAllPlayers, StartPingHeartbeat, CallAfter
+local Init
+
+-- ----------------------------------------------------------------------------
+-- State
+-- ----------------------------------------------------------------------------
+local Cues = {}          -- 1..MaxCues -> { name, notes, color, armed, confirm, state, actions = {1..MaxActions} }
+local UdpTargets = {}    -- 1..NumUdp  -> { name, ip, port }
+local UdpSockets = {}    -- 1..NumUdp  -> UdpSocket object (or nil if never opened / failed)
+local ComponentCache = {}-- component name -> Component handle, or false if resolution failed
+local LastFireTime = {}  -- cue index -> os.clock() of last accepted fire (debounce)
+local PendingConfirm = {}-- cue index -> os.clock() of first press awaiting confirmation
+local CueLog = {}        -- most-recent-first array of log line strings
+local CurrentCueIndex = 0
+local NextCueIndex = 1
+local LastTelemetryUpdate = 0.0
+local Loading = true     -- true while Init() is pushing persisted data into Controls,
+                          -- so those programmatic writes don't re-trigger edit handlers.
+
+local CONFIRM_WINDOW_MS = 2000
+local DEBOUNCE_MS = 150
+local TELEMETRY_THROTTLE_MS = 100 -- caps UDP RX status updates at ~10/sec
+local CUE_LOG_MAX = 25
+
+--=============================================================================
+-- Small helpers
+--=============================================================================
+dbg = function(fmt, ...)
+  if DebugOn then
+    print(string.format("[CueEngine] " .. fmt, ...))
+  end
+end
+
+-- One-shot timer helper built on the confirmed Timer.New()/.EventHandler/:Start()/:Stop()
+-- pattern (there is no separate Timer.CallAfter used here, to avoid relying on an
+-- unverified API surface).
+CallAfter = function(fn, seconds)
+  local t = Timer.New()
+  t.EventHandler = function()
+    t:Stop()
+    fn()
+  end
+  t:Start(seconds)
+end
+
+ClampActionType = function(t)
+  if ActionTypeSet[t] then return t end
+  return "none"
+end
+
+ParseValueSpec = function(spec)
+  -- named_control_set value syntax: "V:<num>"=.Value  "P:<num>"=.Position (0..1)
+  -- "S:<text>"=.String  "T" / "" / anything unrecognized = :Trigger()
+  if spec == nil or spec == "" then return "trigger", nil end
+  local upper = spec:upper()
+  if upper == "T" or upper == "TRIGGER" then return "trigger", nil end
+  local mode, data = spec:match("^([VPS]):(.*)$")
+  if mode == "V" then return "value", tonumber(data)
+  elseif mode == "P" then return "position", tonumber(data)
+  elseif mode == "S" then return "string", data
+  end
+  return "trigger", nil
+end
+
+--=============================================================================
+-- Component resolution (resolved & cached once; never looked up in the
+-- cue-fire path itself).
+--=============================================================================
+GetComponent = function(name)
+  if name == nil or name == "" then return nil end
+  if ComponentCache[name] == nil then
+    local ok, comp = pcall(Component.New, name)
+    ComponentCache[name] = ok and comp or false
+  end
+  if ComponentCache[name] == false then return nil end
+  return ComponentCache[name]
+end
+
+RebuildComponentCache = function()
+  local seen = {}
+  for i = 1, MaxCues do
+    for a = 1, MaxActions do
+      local act = Cues[i].actions[a]
+      if (act.type == "player_trigger" or act.type == "named_control_set") and act.target ~= "" then
+        seen[act.target] = true
+      end
+    end
+  end
+  for name, _ in pairs(seen) do
+    GetComponent(name)
+  end
+end
+
+ComponentNameList = function()
+  local names = {}
+  local ok, comps = pcall(Component.GetComponents)
+  if ok and type(comps) == "table" then
+    for _, c in pairs(comps) do
+      if c.Name then table.insert(names, c.Name) end
+    end
+    table.sort(names)
+  end
+  return names
+end
+
+UdpTargetNameList = function()
+  local names = {}
+  for i = 1, NumUdp do table.insert(names, UdpTargets[i].name) end
+  return names
+end
+
+-- ASSUMPTION (flagged per deliverable requirement): Component.GetControls(componentInfo)
+-- is used here to auto-populate the "Control name" dropdown for a chosen component, taking
+-- a component descriptor from Component.GetComponents() and returning control descriptors
+-- with a .Name field, mirroring Component.GetComponents() itself. This could not be fully
+-- verified against a specific Designer version's docs, so it is entirely pcall-wrapped:
+-- if the shape differs, this silently no-ops and ActionControl simply stays a free-typed
+-- text field (which always works, since the exact control names exposed differ per Player
+-- / component type and were intentionally left operator-entered rather than hardcoded).
+RefreshActionControlChoices = function(s, cueIdx, a)
+  local t = Cues[cueIdx].actions[a].type
+  if t ~= "player_trigger" and t ~= "named_control_set" then return end
+  local target = Cues[cueIdx].actions[a].target
+  if target == "" then return end
+  pcall(function()
+    local comps = Component.GetComponents()
+    for _, c in pairs(comps) do
+      if c.Name == target then
+        local names = {}
+        for _, ctrl in pairs(Component.GetControls(c)) do
+          if ctrl.Name then table.insert(names, ctrl.Name) end
+        end
+        table.sort(names)
+        Controls.ActionControl[s].Choices = names
+        break
+      end
+    end
+  end)
+end
+
+RefreshActionTargetChoices = function(s, cueIdx, a)
+  local t = Cues[cueIdx].actions[a].type
+  pcall(function()
+    if t == "udp_send" then
+      Controls.ActionTarget[s].Choices = UdpTargetNameList()
+    elseif t == "player_trigger" or t == "named_control_set" then
+      Controls.ActionTarget[s].Choices = ComponentNameList()
+    else
+      Controls.ActionTarget[s].Choices = {}
+    end
+  end)
+end
+
+--=============================================================================
+-- Persistence (rapidjson <-> hidden ShowData string control)
+--=============================================================================
+BuildShowTable = function()
+  local cuesOut = {}
+  for i = 1, MaxCues do
+    local c = Cues[i]
+    local actionsOut = {}
+    for a = 1, MaxActions do
+      local act = c.actions[a]
+      table.insert(actionsOut, { type = act.type, target = act.target, control = act.control, value = act.value })
+    end
+    table.insert(cuesOut, {
+      id = i, name = c.name, notes = c.notes, color = c.color,
+      armed = c.armed, confirm = c.confirm, actions = actionsOut,
+    })
+  end
+  local udpOut = {}
+  for i = 1, NumUdp do
+    table.insert(udpOut, { name = UdpTargets[i].name, ip = UdpTargets[i].ip, port = UdpTargets[i].port })
+  end
+  return {
+    showName = Controls.ShowNameText.String,
+    lastModified = os.date("%Y-%m-%d %H:%M:%S"),
+    cues = cuesOut,
+    udpTargets = udpOut,
+  }
+end
+
+SaveShowData = function()
+  local ok, encoded = pcall(rapidjson.encode, BuildShowTable())
+  if ok then
+    Controls.ShowData.String = encoded
+    pcall(function() Controls.LastModifiedText.String = os.date("%Y-%m-%d %H:%M:%S") end)
+  else
+    dbg("Failed to encode show data: %s", tostring(encoded))
+  end
+end
+
+ApplyShowTable = function(data)
+  if type(data) ~= "table" then return end
+  if data.showName ~= nil then
+    pcall(function() Controls.ShowNameText.String = tostring(data.showName) end)
+  end
+  if type(data.cues) == "table" then
+    for i = 1, MaxCues do
+      local src = data.cues[i]
+      local c = Cues[i]
+      if src then
+        c.name = tostring(src.name or c.name)
+        c.notes = tostring(src.notes or "")
+        c.color = tostring(src.color or c.color)
+        c.armed = src.armed and true or false
+        c.confirm = src.confirm and true or false
+        for a = 1, MaxActions do
+          local srcAct = src.actions and src.actions[a]
+          if srcAct then
+            c.actions[a] = {
+              type = ClampActionType(tostring(srcAct.type or "none")),
+              target = tostring(srcAct.target or ""),
+              control = tostring(srcAct.control or ""),
+              value = tostring(srcAct.value or ""),
+            }
+          else
+            c.actions[a] = { type = "none", target = "", control = "", value = "" }
+          end
+        end
+      end
+      PushCueToControls(i)
+    end
+  end
+  if type(data.udpTargets) == "table" then
+    for i = 1, NumUdp do
+      local src = data.udpTargets[i]
+      if src then
+        UdpTargets[i].name = tostring(src.name or UdpTargets[i].name)
+        UdpTargets[i].ip = tostring(src.ip or "")
+        UdpTargets[i].port = tonumber(src.port) or 0
+      end
+      PushUdpTargetToControls(i)
+    end
+  end
+end
+
+LoadShowData = function()
+  local raw = Controls.ShowData.String
+  if raw ~= nil and raw ~= "" then
+    local ok, data = pcall(rapidjson.decode, raw)
+    if ok and type(data) == "table" then
+      ApplyShowTable(data)
+      dbg("Loaded show data from persisted ShowData control")
+      return true
+    else
+      dbg("Failed to decode persisted ShowData: %s", tostring(data))
+    end
+  end
+  return false
+end
+
+-- Strict validation used only for operator-triggered Import (never for the
+-- boot-time load above, which trusts its own previously-saved data). Rejects
+-- with a clear message and commits nothing on any invalid input.
+ValidateShowTable = function(data)
+  if type(data) ~= "table" then return false, "Import data is not a JSON object" end
+  if data.cues ~= nil then
+    if type(data.cues) ~= "table" then return false, "'cues' must be an array" end
+    if #data.cues > MaxCues then
+      return false, string.format("Too many cues: %d (max %d)", #data.cues, MaxCues)
+    end
+    for i, c in ipairs(data.cues) do
+      if type(c) ~= "table" then return false, string.format("Cue %d is not an object", i) end
+      if c.actions ~= nil then
+        if type(c.actions) ~= "table" then return false, string.format("Cue %d 'actions' must be an array", i) end
+        if #c.actions > MaxActions then
+          return false, string.format("Cue %d has too many actions: %d (max %d)", i, #c.actions, MaxActions)
+        end
+        for j, act in ipairs(c.actions) do
+          if type(act) ~= "table" then return false, string.format("Cue %d action %d is not an object", i, j) end
+          if act.type ~= nil and not ActionTypeSet[act.type] then
+            return false, string.format("Cue %d action %d has invalid type: %s", i, j, tostring(act.type))
+          end
+        end
+      end
+    end
+  end
+  if data.udpTargets ~= nil then
+    if type(data.udpTargets) ~= "table" then return false, "'udpTargets' must be an array" end
+    if #data.udpTargets > NumUdp then
+      return false, string.format("Too many UDP targets: %d (max %d)", #data.udpTargets, NumUdp)
+    end
+    for i, t in ipairs(data.udpTargets) do
+      if type(t) ~= "table" then return false, string.format("UDP target %d is not an object", i) end
+      if t.ip ~= nil and t.ip ~= "" and not tostring(t.ip):match("^%d+%.%d+%.%d+%.%d+$") then
+        return false, string.format("UDP target %d has invalid IP: %s", i, tostring(t.ip))
+      end
+      -- Port 0 is the sentinel for "not yet configured" (used by never-set-up
+      -- default targets), so it is only validated once an IP is also present.
+      if t.port ~= nil and t.ip ~= nil and t.ip ~= "" then
+        local p = tonumber(t.port)
+        if not p or p < 1 or p > 65535 then
+          return false, string.format("UDP target %d has invalid port: %s", i, tostring(t.port))
+        end
+      end
+    end
+  end
+  return true
+end
+
+--=============================================================================
+-- Push in-memory cue/target state into the visible Controls (used at boot
+-- load and after a validated import).
+--=============================================================================
+PushCueToControls = function(i)
+  local c = Cues[i]
+  pcall(function()
+    Controls.CueName[i].String = c.name
+    Controls.CueNotes[i].String = c.notes
+    Controls.CueColor[i].String = c.color
+    Controls.CueArm[i].Boolean = c.armed
+    Controls.CueConfirm[i].Boolean = c.confirm
+    for a = 1, MaxActions do
+      local s = (i - 1) * MaxActions + a
+      local act = c.actions[a]
+      Controls.ActionType[s].String = act.type
+      Controls.ActionTarget[s].String = act.target
+      Controls.ActionControl[s].String = act.control
+      Controls.ActionValue[s].String = act.value
+    end
+  end)
+  RefreshCueButtonColor(i)
+end
+
+PushUdpTargetToControls = function(i)
+  local t = UdpTargets[i]
+  pcall(function()
+    Controls.UdpTargetName[i].String = t.name
+    Controls.UdpTargetIp[i].String = t.ip
+    Controls.UdpTargetPort[i].Value = t.port
+  end)
+end
+
+--=============================================================================
+-- UI feedback
+--=============================================================================
+RefreshCueButtonColor = function(i)
+  local c = Cues[i]
+  local color = c.color
+  if c.state == "firing" then color = StateColors.firing
+  elseif c.state == "error" then color = StateColors.error
+  elseif c.armed then color = StateColors.armed
+  end
+  pcall(function()
+    Controls.CueButton[i].Color = color
+    local label = (c.name ~= nil and c.name ~= "") and c.name or ("Cue " .. i)
+    Controls.CueButton[i].Legend = string.format("%d: %s", i, label)
+  end)
+end
+
+MarkDirty = function()
+  pcall(function() Controls.UnsavedLed.Color = "#FFA500" end)
+  -- There is no Lua-accessible signal for Designer's "Save to Core" action, so this
+  -- indicator is a one-way reminder once any edit happens this session -- see README.
+end
+
+SetStatusMessage = function(msg)
+  pcall(function()
+    Controls.StatusStateText.String = "Ready"
+    Controls.StatusLed.Color = StateColors.ready
+  end)
+end
+
+SetError = function(msg)
+  pcall(function()
+    Controls.ErrorText.String = msg
+    Controls.ErrorLed.Color = StateColors.error
+    Controls.StatusStateText.String = "Error"
+    Controls.StatusLed.Color = StateColors.error
+  end)
+  if DebugOn then print("[CueEngine][ERROR] " .. tostring(msg)) end
+end
+
+UpdateStatus = function(i)
+  pcall(function()
+    Controls.StatusText.String = string.format("Cue %d: %s", i, Cues[i].name)
+    if NextCueIndex <= MaxCues and NextCueIndex ~= i then
+      Controls.NextCueText.String = string.format("Next: %d: %s", NextCueIndex, Cues[NextCueIndex].name)
+    else
+      Controls.NextCueText.String = "Next: End of Show"
+    end
+  end)
+end
+
+LogCueFire = function(i, success)
+  local line = string.format("%s  Cue %d: %s  %s", os.date("%H:%M:%S"), i, Cues[i].name, success and "OK" or "ERROR")
+  table.insert(CueLog, 1, line)
+  while #CueLog > CUE_LOG_MAX do table.remove(CueLog) end
+  pcall(function() Controls.CueLogText.String = table.concat(CueLog, "\n") end)
+  if DebugOn then print("[CueEngine] " .. line) end
+end
+
+--=============================================================================
+-- UDP
+--=============================================================================
+FindUdpTargetByName = function(name)
+  for i = 1, NumUdp do
+    if UdpTargets[i].name == name then return i end
+  end
+  return nil
+end
+
+-- One shared UdpSocket per configured target slot, opened once here at init
+-- and never re-opened on a per-fire basis. Sockets are keyed by the fixed
+-- 1..NumUdp slot index rather than by the (operator-editable) target name,
+-- since the name can be renamed live at runtime -- the slot index is the
+-- stable identity. Destination IP/Port are read fresh from UdpTargets[i] on
+-- every Send(), so editing a target's IP/Port live never requires reopening
+-- its socket.
+OpenUdpSocket = function(i)
+  local ok, sockOrErr = pcall(function()
+    local s = UdpSocket.New()
+    s.EventHandler = function(sockObj, packet)
+      local now = os.clock()
+      if (now - LastTelemetryUpdate) * 1000 < TELEMETRY_THROTTLE_MS then return end
+      LastTelemetryUpdate = now
+      pcall(function()
+        Controls.UdpTargetStatus[i].String = string.format("RX %s: %s", tostring(packet.Address), tostring(packet.Data))
+      end)
+    end
+    s:Open(nil, 0)
+    return s
+  end)
+  if ok then
+    UdpSockets[i] = sockOrErr
+    pcall(function() Controls.UdpTargetStatus[i].String = "Open" end)
+  else
+    UdpSockets[i] = nil
+    pcall(function() Controls.UdpTargetStatus[i].String = "Error: " .. tostring(sockOrErr) end)
+    dbg("Failed to open UDP socket for target %d: %s", i, tostring(sockOrErr))
+  end
+end
+
+--=============================================================================
+-- Action dispatch
+-- Each Do* function is fully pcall-wrapped internally and returns (ok, err)
+-- rather than throwing, so one failing action in a cue never blocks the
+-- other simultaneous actions in that same cue.
+--=============================================================================
+
+-- ASSUMPTION (flagged per deliverable requirement): the exact set of control
+-- names exposed by a Media/Stream Player component (e.g. "play"/"stop"/
+-- "cue"/"select.1") depends on the specific Player component type, which was
+-- not specified for this build. player_trigger therefore never hardcodes a
+-- control name -- the operator enters/selects it per action (auto-suggested
+-- from the live component's own controls where possible via
+-- RefreshActionControlChoices), and this simply :Trigger()s whatever control
+-- name was given.
+DoPlayerTrigger = function(act)
+  if act.target == "" or act.control == "" then
+    return false, "player_trigger missing target/control"
+  end
+  local comp = GetComponent(act.target)
+  if not comp then return false, "Component not found: " .. act.target end
+  local ok, err = pcall(function() comp[act.control]:Trigger() end)
+  if not ok then return false, string.format("Component not found: %s (%s)", act.target, tostring(err)) end
+  return true
+end
+
+DoNamedControlSet = function(act)
+  if act.target == "" or act.control == "" then
+    return false, "named_control_set missing target/control"
+  end
+  local comp = GetComponent(act.target)
+  if not comp then return false, "Component not found: " .. act.target end
+  local mode, data = ParseValueSpec(act.value)
+  local ok, err = pcall(function()
+    local ctrl = comp[act.control]
+    if mode == "value" then ctrl.Value = data
+    elseif mode == "position" then ctrl.Position = data
+    elseif mode == "string" then ctrl.String = data
+    else ctrl:Trigger()
+    end
+  end)
+  if not ok then return false, string.format("Component not found: %s (%s)", act.target, tostring(err)) end
+  return true
+end
+
+-- ASSUMPTION (flagged per deliverable requirement): UDP payload format is
+-- raw ASCII with no automatically-appended line terminator -- whatever the
+-- operator types into the Value field (Action~Value) is sent byte-for-byte.
+-- If a target device needs a terminator (CR, LF, CRLF), the operator should
+-- type it explicitly using Lua escapes when authoring via JSON import, e.g.
+-- "PLAY\r\n" in the imported JSON string.
+DoUdpSend = function(act)
+  local targetIdx = FindUdpTargetByName(act.target)
+  if not targetIdx then return false, "UDP target not found: " .. tostring(act.target) end
+  local sock = UdpSockets[targetIdx]
+  if not sock then return false, "UDP socket not open: " .. tostring(act.target) end
+  local tgt = UdpTargets[targetIdx]
+  local ok, err = pcall(function() sock:Send(tgt.ip, tgt.port, act.value or "") end)
+  if not ok then return false, string.format("UDP send failed: %s (%s)", act.target, tostring(err)) end
+  return true
+end
+
+DispatchAction = function(act)
+  if act.type == "player_trigger" then return DoPlayerTrigger(act)
+  elseif act.type == "udp_send" then return DoUdpSend(act)
+  elseif act.type == "named_control_set" then return DoNamedControlSet(act)
+  else return true
+  end
+end
+
+--=============================================================================
+-- Cue firing
+--=============================================================================
+FireCueNow = function(i)
+  local now = os.clock()
+  if LastFireTime[i] and (now - LastFireTime[i]) * 1000 < DEBOUNCE_MS then
+    dbg("Debounced re-fire of cue %d", i)
+    return
+  end
+  LastFireTime[i] = now
+
+  local cue = Cues[i]
+  CurrentCueIndex = i
+  NextCueIndex = math.min(i + 1, MaxCues)
+  cue.state = "firing"
+  RefreshCueButtonColor(i)
+  pcall(function()
+    Controls.StatusStateText.String = "Firing"
+    Controls.StatusLed.Color = StateColors.firing
+  end)
+
+  local errors = {}
+  for a = 1, MaxActions do
+    local act = cue.actions[a]
+    if act.type ~= "none" then
+      local ok, err = DispatchAction(act)
+      if not ok then
+        table.insert(errors, string.format("Action %d (%s): %s", a, act.type, tostring(err)))
+      end
+    end
+  end
+
+  if #errors > 0 then
+    cue.state = "error"
+    SetError(string.format("Cue %d: %s", i, table.concat(errors, " | ")))
+  else
+    cue.state = cue.armed and "armed" or "idle"
+    SetStatusMessage(string.format("Fired cue %d: %s", i, cue.name))
+  end
+  RefreshCueButtonColor(i)
+  UpdateStatus(i)
+  LogCueFire(i, #errors == 0)
+end
+
+OnCueButtonPressed = function(i)
+  local cue = Cues[i]
+  if not cue.confirm then
+    FireCueNow(i)
+    return
+  end
+  local now = os.clock()
+  if PendingConfirm[i] and (now - PendingConfirm[i]) * 1000 <= CONFIRM_WINDOW_MS then
+    PendingConfirm[i] = nil
+    FireCueNow(i)
+  else
+    PendingConfirm[i] = now
+    pcall(function()
+      Controls.CueButton[i].Legend = string.format("%d: CONFIRM?", i)
+      Controls.CueButton[i].Color = StateColors.error
+    end)
+    CallAfter(function()
+      if PendingConfirm[i] == now then
+        PendingConfirm[i] = nil
+        RefreshCueButtonColor(i)
+      end
+    end, CONFIRM_WINDOW_MS / 1000)
+  end
+end
+
+StopAllPlayers = function()
+  local stopCtrl = Controls.GlobalStopControlName.String
+  if stopCtrl == "" then stopCtrl = "stop" end
+  local errors = {}
+  for name, comp in pairs(ComponentCache) do
+    if comp then
+      local ok, err = pcall(function() comp[stopCtrl]:Trigger() end)
+      if not ok then table.insert(errors, string.format("%s: %s", name, tostring(err))) end
+    end
+  end
+  return errors
+end
+
+--=============================================================================
+-- Optional: UDP target heartbeat via the Ping extension. This is a "nice to
+-- have" per spec ("do not sacrifice reliability for these") so the whole
+-- thing is pcall-wrapped and simply disables itself on any error.
+--
+-- ASSUMPTION (flagged per deliverable requirement): the exact Ping method
+-- signature (Ping.New/:start/:setPingInterval/.EventHandler/.ErrorHandler,
+-- including casing) could not be verified with full certainty for every
+-- Designer version. Verify against the installed Designer's own Ping
+-- documentation and adjust if this silently fails to populate target status.
+--=============================================================================
+StartPingHeartbeat = function()
+  if NumUdp <= 0 then return end
+  local pingTimer = Timer.New()
+  local checkIdx = 1
+  pingTimer.EventHandler = function()
+    local i = checkIdx
+    checkIdx = checkIdx + 1
+    if checkIdx > NumUdp then checkIdx = 1 end
+    local tgt = UdpTargets[i]
+    if tgt.ip ~= "" then
+      pcall(function()
+        local p = Ping.New(tgt.ip)
+        p.EventHandler = function()
+          pcall(function() Controls.UdpTargetStatus[i].String = "Reachable" end)
+        end
+        p.ErrorHandler = function()
+          pcall(function() Controls.UdpTargetStatus[i].String = "Unreachable" end)
+        end
+        p:start(true)
+      end)
+    end
+  end
+  pingTimer:Start(5)
+end
+
+--=============================================================================
+-- Wire up EventHandlers
+--=============================================================================
+Controls.GoButton.EventHandler = function()
+  OnCueButtonPressed(NextCueIndex)
+end
+
+Controls.StopAllButton.EventHandler = function()
+  local errs = StopAllPlayers()
+  if #errs > 0 then
+    SetError("Stop-all errors: " .. table.concat(errs, " | "))
+  else
+    SetStatusMessage("All players stopped")
+  end
+end
+
+Controls.PanicButton.EventHandler = function()
+  local errs = StopAllPlayers()
+  local payload = Controls.PanicUdpPayload.String
+  if payload ~= "" then
+    for i = 1, NumUdp do
+      if UdpSockets[i] then
+        local ok, err = pcall(function() UdpSockets[i]:Send(UdpTargets[i].ip, UdpTargets[i].port, payload) end)
+        if not ok then table.insert(errs, string.format("UDP %s: %s", UdpTargets[i].name, tostring(err))) end
+      end
+    end
+  end
+  for i = 1, MaxCues do
+    Cues[i].state = "idle"
+    RefreshCueButtonColor(i)
+  end
+  if #errs > 0 then
+    SetError("PANIC errors: " .. table.concat(errs, " | "))
+  else
+    SetStatusMessage("PANIC executed - safe state sent")
+  end
+end
+
+Controls.LockToggle.EventHandler = function() end -- pure UI state; read directly where needed
+
+Controls.ExportButton.EventHandler = function()
+  local ok, encoded = pcall(rapidjson.encode, BuildShowTable())
+  if ok then
+    Controls.ExportData.String = encoded
+  else
+    Controls.ExportData.String = ""
+    SetError("Export failed: " .. tostring(encoded))
+  end
+end
+
+Controls.ImportButton.EventHandler = function()
+  local raw = Controls.ImportData.String
+  if raw == nil or raw == "" then
+    Controls.ImportErrorText.String = "Import data is empty"
+    return
+  end
+  local ok, data = pcall(rapidjson.decode, raw)
+  if not ok then
+    Controls.ImportErrorText.String = "Invalid JSON: " .. tostring(data)
+    return
+  end
+  local valid, verr = ValidateShowTable(data)
+  if not valid then
+    Controls.ImportErrorText.String = "Import rejected: " .. tostring(verr)
+    return
+  end
+  ApplyShowTable(data)
+  Controls.ImportErrorText.String = ""
+  MarkDirty()
+  SaveShowData()
+  RebuildComponentCache()
+  dbg("Show imported successfully")
+end
+
+for i = 1, MaxCues do
+  Cues[i] = { name = "Cue " .. i, notes = "", color = "#3B3F45", armed = false, confirm = false, state = "idle", actions = {} }
+  for a = 1, MaxActions do
+    Cues[i].actions[a] = { type = "none", target = "", control = "", value = "" }
+  end
+
+  Controls.CueName[i].EventHandler = function(ctl)
+    if Loading then return end
+    if Controls.LockToggle.Boolean then ctl.String = Cues[i].name; return end
+    Cues[i].name = ctl.String
+    RefreshCueButtonColor(i)
+    MarkDirty(); SaveShowData()
+  end
+  Controls.CueNotes[i].EventHandler = function(ctl)
+    if Loading then return end
+    if Controls.LockToggle.Boolean then ctl.String = Cues[i].notes; return end
+    Cues[i].notes = ctl.String
+    MarkDirty(); SaveShowData()
+  end
+  Controls.CueColor[i].EventHandler = function(ctl)
+    if Loading then return end
+    if Controls.LockToggle.Boolean then ctl.String = Cues[i].color; return end
+    Cues[i].color = ctl.String
+    RefreshCueButtonColor(i)
+    MarkDirty(); SaveShowData()
+  end
+  Controls.CueArm[i].EventHandler = function(ctl)
+    if Loading then return end
+    Cues[i].armed = ctl.Boolean
+    RefreshCueButtonColor(i)
+    MarkDirty(); SaveShowData()
+  end
+  Controls.CueConfirm[i].EventHandler = function(ctl)
+    if Loading then return end
+    Cues[i].confirm = ctl.Boolean
+    MarkDirty(); SaveShowData()
+  end
+  Controls.CueButton[i].EventHandler = function()
+    OnCueButtonPressed(i)
+  end
+end
+
+for s = 1, MaxSlots do
+  local cueIdx = math.floor((s - 1) / MaxActions) + 1
+  local a = ((s - 1) % MaxActions) + 1
+
+  pcall(function() Controls.ActionType[s].Choices = ActionTypes end)
+
+  Controls.ActionType[s].EventHandler = function(ctl)
+    if Loading then return end
+    if Controls.LockToggle.Boolean then ctl.String = Cues[cueIdx].actions[a].type; return end
+    Cues[cueIdx].actions[a].type = ClampActionType(ctl.String)
+    RefreshActionTargetChoices(s, cueIdx, a)
+    MarkDirty(); SaveShowData()
+  end
+  Controls.ActionTarget[s].EventHandler = function(ctl)
+    if Loading then return end
+    if Controls.LockToggle.Boolean then ctl.String = Cues[cueIdx].actions[a].target; return end
+    Cues[cueIdx].actions[a].target = ctl.String
+    RefreshActionControlChoices(s, cueIdx, a)
+    MarkDirty(); SaveShowData()
+  end
+  Controls.ActionControl[s].EventHandler = function(ctl)
+    if Loading then return end
+    if Controls.LockToggle.Boolean then ctl.String = Cues[cueIdx].actions[a].control; return end
+    Cues[cueIdx].actions[a].control = ctl.String
+    MarkDirty(); SaveShowData()
+  end
+  Controls.ActionValue[s].EventHandler = function(ctl)
+    if Loading then return end
+    if Controls.LockToggle.Boolean then ctl.String = Cues[cueIdx].actions[a].value; return end
+    Cues[cueIdx].actions[a].value = ctl.String
+    MarkDirty(); SaveShowData()
+  end
+end
+
+for i = 1, NumUdp do
+  UdpTargets[i] = { name = "Target " .. i, ip = "", port = 0 }
+
+  Controls.UdpTargetName[i].EventHandler = function(ctl)
+    if Loading then return end
+    if Controls.LockToggle.Boolean then ctl.String = UdpTargets[i].name; return end
+    UdpTargets[i].name = ctl.String
+    MarkDirty(); SaveShowData()
+  end
+  Controls.UdpTargetIp[i].EventHandler = function(ctl)
+    if Loading then return end
+    if Controls.LockToggle.Boolean then ctl.String = UdpTargets[i].ip; return end
+    UdpTargets[i].ip = ctl.String
+    MarkDirty(); SaveShowData()
+  end
+  Controls.UdpTargetPort[i].EventHandler = function(ctl)
+    if Loading then return end
+    if Controls.LockToggle.Boolean then ctl.Value = UdpTargets[i].port; return end
+    UdpTargets[i].port = math.floor(ctl.Value)
+    MarkDirty(); SaveShowData()
+  end
+end
+
+--=============================================================================
+-- Init
+--=============================================================================
+Init = function()
+  Loading = true
+
+  local loaded = LoadShowData()
+  if not loaded then
+    for i = 1, MaxCues do PushCueToControls(i) end
+    for i = 1, NumUdp do PushUdpTargetToControls(i) end
+    SaveShowData()
+  end
+
+  RebuildComponentCache()
+  for i = 1, NumUdp do OpenUdpSocket(i) end
+  for i = 1, MaxCues do RefreshCueButtonColor(i) end
+
+  pcall(function()
+    Controls.StatusStateText.String = "Ready"
+    Controls.StatusText.String = "No cue fired yet"
+    Controls.StatusLed.Color = StateColors.ready
+    Controls.ErrorLed.Color = StateColors.neutral
+    Controls.UnsavedLed.Color = StateColors.neutral
+    if MaxCues >= 1 then
+      Controls.NextCueText.String = string.format("Next: %d: %s", NextCueIndex, Cues[NextCueIndex].name)
+    end
+  end)
+
+  StartPingHeartbeat()
+
+  Loading = false
+  dbg("Init complete: %d cues, %d actions/cue, %d UDP targets", MaxCues, MaxActions, NumUdp)
+end
+
+Init()
+
+end -- if Controls then
