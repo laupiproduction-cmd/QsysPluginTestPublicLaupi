@@ -195,6 +195,12 @@ in emulation.
 - Every external I/O call (`UdpSocket:Send`, component control access) is
   wrapped in `pcall`; one failing action in a cue reports a specific error
   without blocking that cue's other simultaneous actions or any other cue.
+- A Boolean action's Value toggle commits its current position to the stored
+  action **as soon as a Boolean control is selected**, not only when the
+  operator clicks the toggle. Earlier builds left a freshly-detected Boolean
+  action's value blank until touched, which made an untouched "off" toggle
+  silently fall through to `:Trigger()` instead of actually setting
+  `.Boolean = false` when the cue fired — fixed in `RefreshActionValueEditor`.
 
 ## Assumptions flagged for review
 

@@ -693,6 +693,20 @@ RefreshActionValueEditor = function(a)
       local boolVal = (mode == "boolean" and data) or false
       Controls.ActionValueBool[a].Boolean = boolVal
       Controls.ActionValueBool[a].Legend = boolVal and "TRUE" or "FALSE"
+      -- Commit the toggle's current (possibly still-default/untouched)
+      -- position into the stored action value right away. Without this, a
+      -- freshly-detected Boolean action left at its default "off" position
+      -- keeps act.value == "" (its untouched default), and ParseValueSpec("")
+      -- falls through to "trigger" mode -- so firing it would call :Trigger()
+      -- instead of actually setting .Boolean = false, unless the operator
+      -- happened to interact with the toggle first. Normalizing here makes
+      -- the displayed default state authoritative immediately, with no
+      -- toggle interaction required.
+      local normalized = boolVal and "B:true" or "B:false"
+      if act.value ~= normalized then
+        act.value = normalized
+        if not Loading then MarkDirty(); SaveShowData() end
+      end
     end
   end)
 end
