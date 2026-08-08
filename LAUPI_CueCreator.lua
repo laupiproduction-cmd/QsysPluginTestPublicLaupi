@@ -5,19 +5,30 @@
 
     Cues    - click "+ Add Cue" to create a renamable cue. Each cue can run
               several Actions (from the Actions tab) in sequence when you
-              press its "Go" button.
-    Actions - click "+ Add Action" to build a reusable action: Play/Stop an
-              Audio Player (by its Named Component Code Name), or Send a UDP
-              message to a Device (from the Devices tab).
+              press its "Go" button. The row of the most recently fired cue
+              lights up (green LED) so you can see which one is active.
+    Actions - click "+ Add Action" to build a reusable action. Two kinds:
+                "Set Component Control" - type a Named Component's Code Name,
+                pick one of its real controls (mute, bypass, gain, play,
+                stop, cross-point gain on a matrix mixer, etc. - whatever
+                that component actually exposes) from the auto-populated
+                list, and the value field adapts to that control: a
+                True/False switch for Boolean controls, a number box for
+                numeric controls (gain, position, frequency...), a text box
+                for text controls, or nothing at all for pure triggers
+                (play/stop/etc. just fire).
+                "Send UDP Message" - send text to a Device (from the
+                Devices tab).
     Devices - click "+ Add Device" to register a Name/IP/Port for UDP, with
               a "Test" button to send a test packet.
 
-  To link multiple Q-SYS Audio Players: create one Action per player (e.g.
-  "Play Player 1" -> Target "Player1", "Play Player 2" -> Target "Player2"),
-  using each player's exact Code Name (see that component's Properties).
-  Then pick whichever of those actions you want on each Cue's action slots.
-  There's no fixed limit on how many distinct players you can reference -
-  just add one Action per player/command you need.
+  To link multiple Q-SYS components (players, gains, matrix mixers, ...):
+  create one Action per control you want to touch, each with its own
+  Target Component Code Name (see that component's own Properties for its
+  Code Name) and Control selection. There's no fixed limit on how many
+  distinct components you can reference - just add one Action per
+  component+control combo you need, then pick whichever ones you want on
+  each Cue's action slots.
 
   A Q-SYS component's control set is fixed once compiled, so the "Add"
   buttons reveal pre-built hidden slots rather than creating new controls.
@@ -29,9 +40,9 @@
 
 PluginInfo = {
   Name = "LAUPI~Cue Creator",
-  Version = "2.0",
+  Version = "3.0",
   Id = "qsc.plugin.laupi.cuecreator.74302a81-ce41-4d85-956d-007ca844cdc8",
-  Description = "Create renamable cues that each run one or more actions (Play/Stop Audio Player, Send UDP) targeting your own library of actions and network devices.",
+  Description = "Create renamable cues that each run one or more actions against the real controls of any Named Component (mute, bypass, gain, play, stop, matrix cross-points, ...) or send UDP, with a highlighted active-cue row.",
   ShowDebug = false,
   Author = "LAUPI",
 }
@@ -90,6 +101,7 @@ function GetControls(props)
   table.insert(ctrls, { Name = "CueStatus", ControlType = "Text", UserPin = false })
 
   for i = 1, maxCues do
+    table.insert(ctrls, { Name = "CueActiveLed_" .. i, ControlType = "Indicator", IndicatorType = "LED", UserPin = false })
     table.insert(ctrls, { Name = "CueName_" .. i, ControlType = "Text", UserPin = false })
     table.insert(ctrls, { Name = "RemoveCue_" .. i, ControlType = "Button", ButtonType = "Trigger", UserPin = false })
     table.insert(ctrls, { Name = "FireCue_" .. i, ControlType = "Button", ButtonType = "Trigger", UserPin = true, PinStyle = "Input" })
@@ -106,7 +118,18 @@ function GetControls(props)
     table.insert(ctrls, { Name = "ActionName_" .. a, ControlType = "Text", UserPin = false })
     table.insert(ctrls, { Name = "RemoveAction_" .. a, ControlType = "Button", ButtonType = "Trigger", UserPin = false })
     table.insert(ctrls, { Name = "ActionType_" .. a, ControlType = "Text", UserPin = false })
+
+    -- "Set Component Control" fields
     table.insert(ctrls, { Name = "ActionTarget_" .. a, ControlType = "Text", UserPin = false })
+    table.insert(ctrls, { Name = "ScanAction_" .. a, ControlType = "Button", ButtonType = "Trigger", UserPin = false })
+    table.insert(ctrls, { Name = "ActionControl_" .. a, ControlType = "Text", UserPin = false })
+    -- Value input - only one of these three is shown, based on the selected
+    -- control's detected type (Boolean / numeric / text).
+    table.insert(ctrls, { Name = "ActionValueBool_" .. a, ControlType = "Button", ButtonType = "Toggle", UserPin = false })
+    table.insert(ctrls, { Name = "ActionValueNumber_" .. a, ControlType = "Text", UserPin = false })
+    table.insert(ctrls, { Name = "ActionValueText_" .. a, ControlType = "Text", UserPin = false })
+
+    -- "Send UDP Message" fields
     table.insert(ctrls, { Name = "ActionDevice_" .. a, ControlType = "Text", UserPin = false })
     table.insert(ctrls, { Name = "ActionUdpMessage_" .. a, ControlType = "Text", UserPin = false })
   end
@@ -144,29 +167,31 @@ function GetControlLayout(props)
 
   if CurrentPage == "Cues" then
     local actionColW = 130
+    local actionsX = 216
 
     table.insert(graphics, { Type = "Header", Text = "Cues", Position = { 8, 8 }, Size = { 600, 20 } })
-    table.insert(graphics, { Type = "Text", Text = "Name", Position = { 40, 34 }, Size = { 140, 16 } })
+    table.insert(graphics, { Type = "Text", Text = "Name", Position = { 68, 34 }, Size = { 140, 16 } })
     for j = 1, maxActionsPerCue do
-      table.insert(graphics, { Type = "Text", Text = "Action " .. j, Position = { 188 + (j - 1) * actionColW, 34 }, Size = { actionColW, 16 } })
+      table.insert(graphics, { Type = "Text", Text = "Action " .. j, Position = { actionsX + (j - 1) * actionColW, 34 }, Size = { actionColW, 16 } })
     end
 
     for i = 1, maxCues do
       local y = top + (i - 1) * rowHeight
 
-      layout["RemoveCue_" .. i] = { PrettyName = "Remove Cue " .. i, Legend = "X", Style = "Button", ButtonStyle = "Trigger", Position = { 8, y }, Size = { 24, 22 } }
-      layout["CueName_" .. i] = { PrettyName = "Cue " .. i .. " Name", Style = "Text", Position = { 40, y }, Size = { 140, 22 } }
+      layout["CueActiveLed_" .. i] = { PrettyName = "Cue " .. i .. " Active", Style = "LED", Color = { 0, 200, 0 }, Position = { 8, y + 3 }, Size = { 16, 16 } }
+      layout["RemoveCue_" .. i] = { PrettyName = "Remove Cue " .. i, Legend = "X", Style = "Button", ButtonStyle = "Trigger", Position = { 30, y }, Size = { 24, 22 } }
+      layout["CueName_" .. i] = { PrettyName = "Cue " .. i .. " Name", Style = "Text", Position = { 68, y }, Size = { 140, 22 } }
 
       for j = 1, maxActionsPerCue do
         layout["CueAction_" .. i .. "_" .. j] = {
           PrettyName = "Cue " .. i .. " Action " .. j,
           Style = "ComboBox",
-          Position = { 188 + (j - 1) * actionColW, y },
+          Position = { actionsX + (j - 1) * actionColW, y },
           Size = { actionColW - 6, 22 },
         }
       end
 
-      local fireX = 188 + maxActionsPerCue * actionColW
+      local fireX = actionsX + maxActionsPerCue * actionColW
       layout["FireCue_" .. i] = { PrettyName = "Fire Cue " .. i, Legend = "Go", Style = "Button", ButtonStyle = "Trigger", Position = { fireX, y }, Size = { 60, 22 } }
     end
 
@@ -175,34 +200,48 @@ function GetControlLayout(props)
     layout["CueStatus"] = { PrettyName = "Cue Status", Style = "Text", Position = { 116, bottomY }, Size = { 300, 22 } }
 
   elseif CurrentPage == "Actions" then
-    local nameW, typeW, targetW, deviceW, msgW = 130, 160, 150, 130, 160
+    local nameW, typeW, col3W, scanW, col4W, valueW = 130, 160, 130, 40, 150, 110
 
-    table.insert(graphics, { Type = "Header", Text = "Actions Library", Position = { 8, 8 }, Size = { 780, 20 } })
-    table.insert(graphics, { Type = "Text", Text = "Name", Position = { 40, 34 }, Size = { nameW, 16 } })
-    table.insert(graphics, { Type = "Text", Text = "Type", Position = { 40 + nameW + 6, 34 }, Size = { typeW, 16 } })
-    table.insert(graphics, { Type = "Text", Text = "Target Component", Position = { 40 + nameW + typeW + 12, 34 }, Size = { targetW, 16 } })
-    table.insert(graphics, { Type = "Text", Text = "Device", Position = { 40 + nameW + typeW + targetW + 18, 34 }, Size = { deviceW, 16 } })
-    table.insert(graphics, { Type = "Text", Text = "UDP Message", Position = { 40 + nameW + typeW + targetW + deviceW + 24, 34 }, Size = { msgW, 16 } })
+    local xName = 40
+    local xType = xName + nameW + 6
+    local xCol3 = xType + typeW + 6
+    local xScan = xCol3 + col3W + 4
+    local xCol4 = xScan + scanW + 6
+    local xValue = xCol4 + col4W + 6
+
+    table.insert(graphics, { Type = "Header", Text = "Actions Library", Position = { 8, 8 }, Size = { 850, 20 } })
+    table.insert(graphics, { Type = "Text", Text = "Name", Position = { xName, 34 }, Size = { nameW, 16 } })
+    table.insert(graphics, { Type = "Text", Text = "Type", Position = { xType, 34 }, Size = { typeW, 16 } })
+    table.insert(graphics, { Type = "Text", Text = "Target / Device", Position = { xCol3, 34 }, Size = { col3W, 16 } })
+    table.insert(graphics, { Type = "Text", Text = "Control / Message", Position = { xCol4, 34 }, Size = { col4W, 16 } })
+    table.insert(graphics, { Type = "Text", Text = "Value", Position = { xValue, 34 }, Size = { valueW, 16 } })
 
     for a = 1, maxActions do
       local y = top + (a - 1) * rowHeight
-      local x = 40
 
       layout["RemoveAction_" .. a] = { PrettyName = "Remove Action " .. a, Legend = "X", Style = "Button", ButtonStyle = "Trigger", Position = { 8, y }, Size = { 24, 22 } }
-      layout["ActionName_" .. a] = { PrettyName = "Action " .. a .. " Name", Style = "Text", Position = { x, y }, Size = { nameW, 22 } }
-      x = x + nameW + 6
-      layout["ActionType_" .. a] = { PrettyName = "Action " .. a .. " Type", Style = "ComboBox", Position = { x, y }, Size = { typeW, 22 } }
-      x = x + typeW + 6
-      layout["ActionTarget_" .. a] = { PrettyName = "Action " .. a .. " Target", Style = "Text", Position = { x, y }, Size = { targetW, 22 } }
-      x = x + targetW + 6
-      layout["ActionDevice_" .. a] = { PrettyName = "Action " .. a .. " Device", Style = "ComboBox", Position = { x, y }, Size = { deviceW, 22 } }
-      x = x + deviceW + 6
-      layout["ActionUdpMessage_" .. a] = { PrettyName = "Action " .. a .. " UDP Message", Style = "Text", Position = { x, y }, Size = { msgW, 22 } }
+      layout["ActionName_" .. a] = { PrettyName = "Action " .. a .. " Name", Style = "Text", Position = { xName, y }, Size = { nameW, 22 } }
+      layout["ActionType_" .. a] = { PrettyName = "Action " .. a .. " Type", Style = "ComboBox", Position = { xType, y }, Size = { typeW, 22 } }
+
+      -- Col3: Target Component (component mode) OR Device (UDP mode)
+      layout["ActionTarget_" .. a] = { PrettyName = "Action " .. a .. " Target", Style = "Text", Position = { xCol3, y }, Size = { col3W, 22 } }
+      layout["ActionDevice_" .. a] = { PrettyName = "Action " .. a .. " Device", Style = "ComboBox", Position = { xCol3, y }, Size = { col3W, 22 } }
+
+      layout["ScanAction_" .. a] = { PrettyName = "Scan Action " .. a .. " Controls", Legend = "Scan", Style = "Button", ButtonStyle = "Trigger", Position = { xScan, y }, Size = { scanW, 22 } }
+
+      -- Col4: Control picker (component mode) OR UDP Message (UDP mode)
+      layout["ActionControl_" .. a] = { PrettyName = "Action " .. a .. " Control", Style = "ComboBox", Position = { xCol4, y }, Size = { col4W, 22 } }
+      layout["ActionUdpMessage_" .. a] = { PrettyName = "Action " .. a .. " UDP Message", Style = "Text", Position = { xCol4, y }, Size = { col4W, 22 } }
+
+      -- Value column: only one of these three is visible at a time
+      layout["ActionValueBool_" .. a] = { PrettyName = "Action " .. a .. " Value (True/False)", Legend = "True/False", Style = "Button", ButtonStyle = "Toggle", Position = { xValue, y }, Size = { valueW, 22 } }
+      layout["ActionValueNumber_" .. a] = { PrettyName = "Action " .. a .. " Value (Number)", Style = "Text", Position = { xValue, y }, Size = { valueW, 22 } }
+      layout["ActionValueText_" .. a] = { PrettyName = "Action " .. a .. " Value (Text)", Style = "Text", Position = { xValue, y }, Size = { valueW, 22 } }
     end
 
     local bottomY = top + maxActions * rowHeight + 8
     layout["AddAction"] = { PrettyName = "Add Action", Legend = "+ Add Action", Style = "Button", ButtonStyle = "Trigger", Position = { 8, bottomY }, Size = { 100, 22 } }
-    layout["ActionStatus"] = { PrettyName = "Action Status", Style = "Text", Position = { 116, bottomY }, Size = { 300, 22 } }
+    layout["ActionStatus"] = { PrettyName = "Action Status", Style = "Text", Position = { 116, bottomY }, Size = { 400, 22 } }
 
   elseif CurrentPage == "Devices" then
     local nameW, ipW, portW, testW = 150, 150, 80, 90
@@ -246,28 +285,79 @@ if Controls then
   local cueActive = {}
   local actionActive = {}
   local deviceActive = {}
+  local activeCueIndex = nil
+
+  -- [targetComponentName][controlName] = Type string reported by Component.GetControls
+  local componentControlTypes = {}
 
   -- Kept at this scope (not inside a function) so it isn't garbage collected.
   local udpSocket = UdpSocket.New()
   udpSocket:Open()
 
+  -- Best-effort classification of a discovered control's reported Type into
+  -- one of "bool" / "number" / "text" / "trigger" / "unknown".
+  local function classifyControlType(t)
+    if t == nil then return "unknown" end
+    local lt = string.lower(tostring(t))
+    if string.find(lt, "trigger") then
+      return "trigger"
+    elseif string.find(lt, "bool") then
+      return "bool"
+    elseif string.find(lt, "text") or string.find(lt, "string") then
+      return "text"
+    elseif string.find(lt, "float") or string.find(lt, "integer") or string.find(lt, "int")
+        or string.find(lt, "position") or string.find(lt, "gain") or string.find(lt, "value") then
+      return "number"
+    end
+    return "unknown"
+  end
+
   -- Visibility helpers ------------------------------------------------------
   local function setCueRowVisible(i, visible)
+    Controls["CueActiveLed_" .. i].IsInvisible = not visible
     Controls["CueName_" .. i].IsInvisible = not visible
     Controls["RemoveCue_" .. i].IsInvisible = not visible
     Controls["FireCue_" .. i].IsInvisible = not visible
     for j = 1, maxActionsPerCue do
       Controls["CueAction_" .. i .. "_" .. j].IsInvisible = not visible
     end
+    if not visible then
+      Controls["CueActiveLed_" .. i].Boolean = false
+    end
+  end
+
+  -- Shows/hides the sub-fields of an Action row based on its Type, and (for
+  -- "Set Component Control") which value-input matches the selected control.
+  local function updateActionRowFields(a)
+    local rowVisible = actionActive[a]
+    local atype = Controls["ActionType_" .. a].String
+    local isComponent = rowVisible and (atype == "Set Component Control")
+    local isUdp = rowVisible and (atype == "Send UDP Message")
+
+    Controls["ActionTarget_" .. a].IsInvisible = not isComponent
+    Controls["ScanAction_" .. a].IsInvisible = not isComponent
+    Controls["ActionControl_" .. a].IsInvisible = not isComponent
+    Controls["ActionDevice_" .. a].IsInvisible = not isUdp
+    Controls["ActionUdpMessage_" .. a].IsInvisible = not isUdp
+
+    local valueKind = "none"
+    if isComponent then
+      local target = Controls["ActionTarget_" .. a].String
+      local ctrlName = Controls["ActionControl_" .. a].String
+      local t = componentControlTypes[target] and componentControlTypes[target][ctrlName]
+      valueKind = classifyControlType(t)
+    end
+
+    Controls["ActionValueBool_" .. a].IsInvisible = not (valueKind == "bool")
+    Controls["ActionValueNumber_" .. a].IsInvisible = not (valueKind == "number" or valueKind == "unknown")
+    Controls["ActionValueText_" .. a].IsInvisible = not (valueKind == "text")
   end
 
   local function setActionRowVisible(a, visible)
     Controls["ActionName_" .. a].IsInvisible = not visible
     Controls["RemoveAction_" .. a].IsInvisible = not visible
     Controls["ActionType_" .. a].IsInvisible = not visible
-    Controls["ActionTarget_" .. a].IsInvisible = not visible
-    Controls["ActionDevice_" .. a].IsInvisible = not visible
-    Controls["ActionUdpMessage_" .. a].IsInvisible = not visible
+    updateActionRowFields(a)
   end
 
   local function setDeviceRowVisible(d, visible)
@@ -342,29 +432,90 @@ if Controls then
     return nil
   end
 
-  -- Fires a control on another Named Component, trying Trigger() first and
-  -- falling back to a momentary Boolean pulse.
-  local function pressComponentControl(comp, ctrlName)
-    local ctrl = comp[ctrlName]
-    if not ctrl then return false end
-    local ok = pcall(function() ctrl:Trigger() end)
-    if not ok then
-      pcall(function()
-        ctrl.Boolean = true
-        ctrl.Boolean = false
-      end)
+  -- Looks up a Named Component by its Code Name and lists its real controls
+  -- (mute, bypass, gain, play, stop, matrix cross-points, etc.) into the
+  -- Action's Control dropdown, caching each control's reported Type.
+  local function scanComponentControls(a)
+    local target = Controls["ActionTarget_" .. a].String
+
+    if target == nil or target == "" then
+      Controls["ActionControl_" .. a].Choices = { "" }
+      return
     end
-    return true
+
+    local ok, comp = pcall(Component.New, target)
+    if not ok or comp == nil then
+      print("LAUPI Cue Creator: could not find a Named Component called '" .. target .. "'.")
+      Controls["ActionControl_" .. a].Choices = { "" }
+      return
+    end
+
+    local ok2, ctrlList = pcall(Component.GetControls, comp)
+    if not ok2 or ctrlList == nil then
+      print("LAUPI Cue Creator: could not read the controls of '" .. target .. "'.")
+      Controls["ActionControl_" .. a].Choices = { "" }
+      return
+    end
+
+    local names = {}
+    componentControlTypes[target] = {}
+    for _, c in ipairs(ctrlList) do
+      if c.Name then
+        table.insert(names, c.Name)
+        componentControlTypes[target][c.Name] = c.Type
+      end
+    end
+    table.sort(names)
+    Controls["ActionControl_" .. a].Choices = names
+  end
+
+  -- Applies a value to a control on another component, using the input
+  -- widget that matches its detected type (Trigger / Boolean / number / text).
+  local function setComponentControlValue(comp, ctrlName, kind, a)
+    local ctrl = comp[ctrlName]
+    if not ctrl then return false, "control not found" end
+
+    if kind == "trigger" then
+      local ok = pcall(function() ctrl:Trigger() end)
+      if ok then return true end
+      ok = pcall(function() ctrl.Boolean = true; ctrl.Boolean = false end)
+      return ok, (ok and nil or "could not trigger control")
+
+    elseif kind == "bool" then
+      local val = Controls["ActionValueBool_" .. a].Boolean
+      local ok = pcall(function() ctrl.Boolean = val end)
+      return ok, (ok and nil or "could not set Boolean value")
+
+    elseif kind == "text" then
+      local txt = Controls["ActionValueText_" .. a].String
+      local ok = pcall(function() ctrl.String = txt end)
+      return ok, (ok and nil or "could not set text value")
+
+    else -- "number" or "unknown": try numeric first, then fall back generically
+      local numStr = Controls["ActionValueNumber_" .. a].String
+      local num = tonumber(numStr)
+      if num ~= nil then
+        local ok = pcall(function() ctrl.Value = num end)
+        if ok then return true end
+      end
+      local ok = pcall(function() ctrl:Trigger() end)
+      if ok then return true end
+      ok = pcall(function() ctrl.Boolean = true; ctrl.Boolean = false end)
+      if ok then return true end
+      return false, "unsupported control type or invalid value"
+    end
   end
 
   local function fireAction(a)
     local actionType = Controls["ActionType_" .. a].String
     local actionName = Controls["ActionName_" .. a].String
 
-    if actionType == "Play Audio Player" or actionType == "Stop Audio Player" then
+    if actionType == "Set Component Control" then
       local targetName = Controls["ActionTarget_" .. a].String
-      if targetName == nil or targetName == "" then
-        print("LAUPI Cue Creator: action '" .. actionName .. "' has no Target Component set.")
+      local ctrlName = Controls["ActionControl_" .. a].String
+
+      if targetName == nil or targetName == "" or ctrlName == nil or ctrlName == "" then
+        print("LAUPI Cue Creator: action '" .. actionName .. "' needs both a Target Component and a Control selected.")
         return
       end
 
@@ -374,9 +525,11 @@ if Controls then
         return
       end
 
-      local ctrlName = (actionType == "Play Audio Player") and "play" or "stop"
-      if not pressComponentControl(comp, ctrlName) then
-        print("LAUPI Cue Creator: '" .. targetName .. "' has no '" .. ctrlName .. "' control.")
+      local t = componentControlTypes[targetName] and componentControlTypes[targetName][ctrlName]
+      local kind = classifyControlType(t)
+      local success, err = setComponentControlValue(comp, ctrlName, kind, a)
+      if not success then
+        print("LAUPI Cue Creator: action '" .. actionName .. "' failed to set '" .. targetName .. "'.'" .. ctrlName .. "' - " .. tostring(err))
       end
 
     elseif actionType == "Send UDP Message" then
@@ -403,7 +556,15 @@ if Controls then
     end
   end
 
+  local function setActiveCue(i)
+    activeCueIndex = i
+    for k = 1, maxCues do
+      Controls["CueActiveLed_" .. k].Boolean = (k == i)
+    end
+  end
+
   local function fireCue(i)
+    setActiveCue(i)
     for j = 1, maxActionsPerCue do
       local actionName = Controls["CueAction_" .. i .. "_" .. j].String
       if actionName ~= nil and actionName ~= "" and actionName ~= "None" then
@@ -430,6 +591,7 @@ if Controls then
       end
     end
 
+    Controls["CueActiveLed_" .. i].Boolean = false
     setCueRowVisible(i, cueActive[i])
 
     Controls["FireCue_" .. i].EventHandler = function()
@@ -439,6 +601,9 @@ if Controls then
     Controls["RemoveCue_" .. i].EventHandler = function()
       cueActive[i] = false
       setCueRowVisible(i, false)
+      if activeCueIndex == i then
+        setActiveCue(nil)
+      end
       updateCueStatus()
     end
   end
@@ -465,12 +630,36 @@ if Controls then
     if Controls["ActionType_" .. a].String == "" then
       Controls["ActionType_" .. a].String = "None"
     end
-    Controls["ActionType_" .. a].Choices = { "None", "Play Audio Player", "Stop Audio Player", "Send UDP Message" }
+    Controls["ActionType_" .. a].Choices = { "None", "Set Component Control", "Send UDP Message" }
+    Controls["ActionControl_" .. a].Choices = { "" }
 
     setActionRowVisible(a, actionActive[a])
 
+    if Controls["ActionTarget_" .. a].String ~= "" then
+      scanComponentControls(a)
+      updateActionRowFields(a)
+    end
+
     Controls["ActionName_" .. a].EventHandler = function()
       refreshActionChoices()
+    end
+
+    Controls["ActionType_" .. a].EventHandler = function()
+      updateActionRowFields(a)
+    end
+
+    Controls["ActionTarget_" .. a].EventHandler = function()
+      scanComponentControls(a)
+      updateActionRowFields(a)
+    end
+
+    Controls["ScanAction_" .. a].EventHandler = function()
+      scanComponentControls(a)
+      updateActionRowFields(a)
+    end
+
+    Controls["ActionControl_" .. a].EventHandler = function()
+      updateActionRowFields(a)
     end
 
     Controls["RemoveAction_" .. a].EventHandler = function()
