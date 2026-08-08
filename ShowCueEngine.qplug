@@ -135,13 +135,40 @@ function GetControls(props)
 end
 
 --=============================================================================
--- Design time: Layout
+-- Design time: Pages, icon color/name, and Layout
+--
+-- Two pages keep the operator-facing surface small while still exposing the
+-- full cue-sheet editor:
+--   "Live Show"   -- status bar, transport, quick-fire cue grid, activity log
+--   "Show Editor" -- UDP targets, export/import, and the full per-cue/
+--                    per-action editor table (the "bigger" authoring UI)
+-- Paging is purely a Designer-canvas display concern: every control still
+-- exists and behaves identically regardless of which page shows it.
 --=============================================================================
+local PageNames = { "Live Show", "Show Editor" }
+
+function GetPages(props)
+  local pages = {}
+  for _, name in ipairs(PageNames) do
+    table.insert(pages, { name = name })
+  end
+  return pages
+end
+
+function GetColor(props)
+  return { 41, 98, 255 } -- accent blue, shown on the component's schematic icon
+end
+
+function GetPrettyName(props)
+  return string.format("Show Cue Engine (%d cues)", props["Max Cues"].Value)
+end
+
 function GetControlLayout(props)
   local maxCues = props["Max Cues"].Value
   local maxActions = props["Max Actions Per Cue"].Value
   local numUdp = props["UDP Targets"].Value
   local maxSlots = maxCues * maxActions
+  local currentPage = PageNames[props["page_index"].Value]
 
   local layout = {}
   local graphics = {}
@@ -153,106 +180,195 @@ function GetControlLayout(props)
     return name .. " " .. i
   end
 
-  graphics[#graphics + 1] = {
-    Type = "Header", Text = "Show Cue Engine", HTextAlign = "Left",
-    Position = { 8, 0 }, Size = { 400, 16 },
-  }
+  -- Shared palette -----------------------------------------------------------
+  local PageBg  = { 235, 238, 242 }
+  local Card    = { 255, 255, 255 }
+  local Border  = { 213, 219, 226 }
+  local Muted   = { 226, 230, 235 } -- subtle row banding
+  local Accent  = { 41, 98, 255 }
+  local Success = { 24, 160, 90 }
+  local Warning = { 214, 140, 20 }
+  local Danger  = { 206, 42, 51 }
 
-  -- Header row ------------------------------------------------------------------
-  layout["ShowNameText"] = { PrettyName = "Show Name", Style = "Text", Position = { 8, 20 }, Size = { 220, 18 } }
-  layout["LastModifiedText"] = { PrettyName = "Last Modified", Style = "Text", Position = { 236, 20 }, Size = { 160, 18 } }
-  layout["UnsavedLed"] = { PrettyName = "Unsaved Changes", Style = "Indicator", Position = { 404, 20 }, Size = { 18, 18 } }
-  graphics[#graphics + 1] = { Type = "Text", Text = "Unsaved", FontSize = 9, Position = { 426, 20 }, Size = { 60, 18 } }
-  layout["LockToggle"] = {
-    PrettyName = "Lock Edits", Style = "Button", ButtonStyle = "Toggle", Legend = "Lock",
-    Color = { 200, 160, 40 }, Position = { 494, 20 }, Size = { 60, 18 },
-  }
+  local function pageBackground(w, h)
+    graphics[#graphics + 1] = { Type = "GroupBox", Fill = PageBg, StrokeColor = PageBg, StrokeWidth = 0, CornerRadius = 0, Position = { 0, 0 }, Size = { w, h } }
+  end
 
-  -- Status bar --------------------------------------------------------------------
-  layout["StatusLed"] = { PrettyName = "Status", Style = "Indicator", Position = { 8, 42 }, Size = { 18, 18 } }
-  layout["StatusText"] = { PrettyName = "Status Text (Cue N: Name)", Style = "Text", Position = { 30, 42 }, Size = { 200, 18 } }
-  layout["StatusStateText"] = { PrettyName = "Status State (Ready/Firing/Error)", Style = "Text", Position = { 236, 42 }, Size = { 100, 18 } }
-  layout["NextCueText"] = { PrettyName = "Next Cue", Style = "Text", Position = { 340, 42 }, Size = { 180, 18 } }
-  layout["ErrorLed"] = { PrettyName = "Error", Style = "Indicator", Position = { 524, 42 }, Size = { 18, 18 } }
-  layout["ErrorText"] = { PrettyName = "Error Text", Style = "Text", Position = { 546, 42 }, Size = { 300, 18 } }
+  local function title(text, x, y, w)
+    graphics[#graphics + 1] = { Type = "Header", Text = text, HTextAlign = "Left", Position = { x, y }, Size = { w, 18 } }
+  end
 
-  -- Transport -----------------------------------------------------------------------
-  layout["GoButton"] = { PrettyName = "Go", Style = "Button", ButtonStyle = "Trigger", Legend = "GO", Color = { 0, 159, 60 }, Position = { 8, 64 }, Size = { 70, 26 } }
-  layout["StopAllButton"] = { PrettyName = "Stop All", Style = "Button", ButtonStyle = "Trigger", Legend = "STOP ALL", Color = { 200, 160, 40 }, Position = { 84, 64 }, Size = { 90, 26 } }
-  layout["PanicButton"] = { PrettyName = "Panic", Style = "Button", ButtonStyle = "Trigger", Legend = "PANIC", Color = { 200, 30, 30 }, Position = { 180, 64 }, Size = { 90, 26 } }
-  layout["GlobalStopControlName"] = { PrettyName = "Player Stop Control Name", Style = "Text", Position = { 280, 64 }, Size = { 150, 26 } }
-  layout["PanicUdpPayload"] = { PrettyName = "Panic UDP Payload", Style = "Text", Position = { 436, 64 }, Size = { 200, 26 } }
-
-  -- Cue grid (quick-fire) --------------------------------------------------------
-  local gridCols = 6
-  local gridX, gridY = 8, 100
-  local cellW, cellH, gap = 96, 40, 4
-  for i = 1, maxCues do
-    local col = (i - 1) % gridCols
-    local row = math.floor((i - 1) / gridCols)
-    layout[key("CueButton", maxCues, i)] = {
-      PrettyName = string.format("Cue %d~Fire", i),
-      Style = "Button", ButtonStyle = "Trigger",
-      Legend = tostring(i),
-      Color = { 80, 90, 100 },
-      Position = { gridX + col * (cellW + gap), gridY + row * (cellH + gap) },
-      Size = { cellW, cellH },
+  local function card(x, y, w, h, heading)
+    graphics[#graphics + 1] = {
+      Type = "GroupBox", Text = heading or "", HTextAlign = "Left",
+      Fill = Card, StrokeColor = Border, StrokeWidth = 1, CornerRadius = 8,
+      Position = { x, y }, Size = { w, h },
     }
   end
-  local gridRows = math.ceil(maxCues / gridCols)
-  local afterGridY = gridY + gridRows * (cellH + gap) + 10
 
-  -- Export / Import / Log --------------------------------------------------------
-  layout["ExportButton"] = { PrettyName = "Export Show", Style = "Button", ButtonStyle = "Trigger", Legend = "Export", Position = { 8, afterGridY }, Size = { 80, 18 } }
-  layout["ExportData"] = { PrettyName = "Export JSON (copy this)", Style = "TextBox", Position = { 8, afterGridY + 20 }, Size = { 300, 90 } }
-  layout["ImportButton"] = { PrettyName = "Import Show", Style = "Button", ButtonStyle = "Trigger", Legend = "Import", Position = { 316, afterGridY }, Size = { 80, 18 } }
-  layout["ImportData"] = { PrettyName = "Import JSON (paste here)", Style = "TextBox", Position = { 316, afterGridY + 20 }, Size = { 300, 90 } }
-  layout["ImportErrorText"] = { PrettyName = "Import Error", Style = "Text", Position = { 316, afterGridY + 112 }, Size = { 300, 18 } }
-  layout["CueLogText"] = { PrettyName = "Cue Fire Log", Style = "TextBox", Position = { 624, afterGridY }, Size = { 280, 130 } }
+  if currentPage == "Live Show" then
+    ------------------------------------------------------------------------
+    -- Page 1: compact operator view -- status, transport, quick-fire grid.
+    ------------------------------------------------------------------------
+    local W = 920
+    local M = 16
 
-  local udpY = afterGridY + 150
-  if numUdp > 0 then
-    graphics[#graphics + 1] = { Type = "Text", Text = "UDP Targets", FontSize = 10, FontStyle = "Bold", Position = { 8, udpY - 16 }, Size = { 200, 14 } }
-    for i = 1, numUdp do
-      local y = udpY + (i - 1) * 20
-      layout[key("UdpTargetName", numUdp, i)] = { PrettyName = string.format("UDP Target %d~Name", i), Style = "Text", Position = { 8, y }, Size = { 120, 18 } }
-      layout[key("UdpTargetIp", numUdp, i)] = { PrettyName = string.format("UDP Target %d~IP", i), Style = "Text", Position = { 132, y }, Size = { 110, 18 } }
-      layout[key("UdpTargetPort", numUdp, i)] = { PrettyName = string.format("UDP Target %d~Port", i), Style = "TextBox", TextBoxStyle = "Meter", Position = { 246, y }, Size = { 70, 18 } }
-      layout[key("UdpTargetStatus", numUdp, i)] = { PrettyName = string.format("UDP Target %d~Status", i), Style = "Text", Position = { 320, y }, Size = { 140, 18 } }
+    title("SHOW CUE ENGINE  ~  Live", M, 6, 500)
+
+    -- Show strip ------------------------------------------------------------
+    card(M, 30, W - 2 * M, 52, "SHOW")
+    layout["ShowNameText"] = { PrettyName = "Show Name", Style = "Text", Position = { 28, 48 }, Size = { 260, 20 } }
+    layout["LastModifiedText"] = { PrettyName = "Last Modified", Style = "Text", Position = { 300, 48 }, Size = { 170, 20 } }
+    layout["UnsavedLed"] = { PrettyName = "Unsaved Changes", Style = "Indicator", Position = { 482, 50 }, Size = { 16, 16 } }
+    graphics[#graphics + 1] = { Type = "Text", Text = "Unsaved", FontSize = 9, Position = { 502, 48 }, Size = { 64, 20 } }
+    layout["LockToggle"] = {
+      PrettyName = "Lock Edits", Style = "Button", ButtonStyle = "Toggle", Legend = "LOCK",
+      Color = Warning, CornerRadius = 4, Position = { 800, 46 }, Size = { 88, 24 },
+    }
+
+    -- Status ------------------------------------------------------------------
+    card(M, 94, W - 2 * M, 56, "STATUS")
+    layout["StatusLed"] = { PrettyName = "Status", Style = "Indicator", Position = { 28, 112 }, Size = { 20, 20 } }
+    layout["StatusText"] = { PrettyName = "Status Text (Cue N: Name)", Style = "Text", Position = { 54, 114 }, Size = { 230, 18 } }
+    layout["StatusStateText"] = { PrettyName = "Status State (Ready/Firing/Error)", Style = "Text", Position = { 294, 114 }, Size = { 110, 18 } }
+    layout["NextCueText"] = { PrettyName = "Next Cue", Style = "Text", Position = { 414, 114 }, Size = { 220, 18 } }
+    layout["ErrorLed"] = { PrettyName = "Error", Style = "Indicator", Position = { 644, 112 }, Size = { 20, 20 } }
+    layout["ErrorText"] = { PrettyName = "Error Text", Style = "Text", Position = { 670, 114 }, Size = { 218, 18 } }
+
+    -- Transport -----------------------------------------------------------------
+    card(M, 162, W - 2 * M, 54, "TRANSPORT")
+    layout["GoButton"] = { PrettyName = "Go", Style = "Button", ButtonStyle = "Trigger", Legend = "GO", Color = Success, CornerRadius = 6, Position = { 28, 178 }, Size = { 120, 30 } }
+    layout["StopAllButton"] = { PrettyName = "Stop All", Style = "Button", ButtonStyle = "Trigger", Legend = "STOP ALL", Color = Warning, CornerRadius = 6, Position = { 160, 178 }, Size = { 140, 30 } }
+    layout["PanicButton"] = { PrettyName = "Panic", Style = "Button", ButtonStyle = "Trigger", Legend = "PANIC", Color = Danger, CornerRadius = 6, Position = { 312, 178 }, Size = { 140, 30 } }
+    graphics[#graphics + 1] = { Type = "Text", Text = "Panic uses the Player Stop Control Name and Panic UDP Payload configured on the Show Editor page.", FontSize = 8, Position = { 470, 186 }, Size = { 420, 14 } }
+
+    -- Cue grid (quick-fire) + activity log side-by-side ------------------------
+    local gridCols = 6
+    local cellW, cellH, gap = 100, 40, 6
+    local gridRows = math.ceil(maxCues / gridCols)
+    local gridInnerW = gridCols * cellW + (gridCols - 1) * gap
+    local gridInnerH = gridRows * cellH + (gridRows - 1) * gap
+    local gridCardX, gridCardY = M, 230
+    local gridCardW = gridInnerW + 28
+    local gridCardH = gridInnerH + 44
+    card(gridCardX, gridCardY, gridCardW, gridCardH, "CUES  (tap to fire)")
+    local gridX, gridY = gridCardX + 14, gridCardY + 30
+    for i = 1, maxCues do
+      local col = (i - 1) % gridCols
+      local row = math.floor((i - 1) / gridCols)
+      layout[key("CueButton", maxCues, i)] = {
+        PrettyName = string.format("Cue %d~Fire", i),
+        Style = "Button", ButtonStyle = "Trigger",
+        Legend = tostring(i),
+        Color = { 70, 82, 97 },
+        CornerRadius = 6,
+        Position = { gridX + col * (cellW + gap), gridY + row * (cellH + gap) },
+        Size = { cellW, cellH },
+      }
     end
-  end
-  local afterUdpY = udpY + (numUdp > 0 and (numUdp * 20 + 20) or 4)
 
-  -- Cue editor: one row per cue, Name/Color/Arm/Confirm/Notes then N action groups
-  graphics[#graphics + 1] = { Type = "Text", Text = "Cue Editor", FontSize = 10, FontStyle = "Bold", Position = { 8, afterUdpY - 16 }, Size = { 200, 14 } }
-  local rowY = afterUdpY
-  local rowH = 20
-  for c = 1, maxCues do
-    local y = rowY + (c - 1) * rowH
-    local x = 8
-    graphics[#graphics + 1] = { Type = "Text", Text = tostring(c), FontSize = 9, HTextAlign = "Right", Position = { x, y }, Size = { 20, 18 } }
-    x = x + 24
-    layout[key("CueName", maxCues, c)] = { PrettyName = string.format("Cue %d~Name", c), Style = "Text", Position = { x, y }, Size = { 140, 18 } }
-    x = x + 144
-    layout[key("CueColor", maxCues, c)] = { PrettyName = string.format("Cue %d~Color (#RRGGBB)", c), Style = "Text", Position = { x, y }, Size = { 64, 18 } }
-    x = x + 68
-    layout[key("CueArm", maxCues, c)] = { PrettyName = string.format("Cue %d~Armed", c), Style = "Button", ButtonStyle = "Toggle", Legend = "Arm", Color = { 0, 159, 60 }, Position = { x, y }, Size = { 40, 18 } }
-    x = x + 44
-    layout[key("CueConfirm", maxCues, c)] = { PrettyName = string.format("Cue %d~Confirm Before Fire", c), Style = "Button", ButtonStyle = "Toggle", Legend = "Cfm", Color = { 200, 160, 40 }, Position = { x, y }, Size = { 40, 18 } }
-    x = x + 44
-    layout[key("CueNotes", maxCues, c)] = { PrettyName = string.format("Cue %d~Notes (run sheet)", c), Style = "Text", Position = { x, y }, Size = { 170, 18 } }
-    x = x + 176
-    for a = 1, maxActions do
-      local s = (c - 1) * maxActions + a
-      layout[key("ActionType", maxSlots, s)] = { PrettyName = string.format("Cue %d~Action %d~Type", c, a), Style = "ComboBox", Position = { x, y }, Size = { 92, 18 } }
-      x = x + 96
-      layout[key("ActionTarget", maxSlots, s)] = { PrettyName = string.format("Cue %d~Action %d~Target (component / UDP target name)", c, a), Style = "ComboBox", Position = { x, y }, Size = { 130, 18 } }
-      x = x + 134
-      layout[key("ActionControl", maxSlots, s)] = { PrettyName = string.format("Cue %d~Action %d~Control name", c, a), Style = "ComboBox", Position = { x, y }, Size = { 110, 18 } }
-      x = x + 114
-      layout[key("ActionValue", maxSlots, s)] = { PrettyName = string.format("Cue %d~Action %d~Value (V:/P:/S:/T or UDP payload)", c, a), Style = "Text", Position = { x, y }, Size = { 120, 18 } }
-      x = x + 128
+    local logCardX = gridCardX + gridCardW + 12
+    local logCardW = W - M - logCardX
+    card(logCardX, gridCardY, logCardW, gridCardH, "ACTIVITY LOG")
+    layout["CueLogText"] = { PrettyName = "Cue Fire Log", Style = "TextBox", Position = { logCardX + 14, gridCardY + 30 }, Size = { logCardW - 28, gridCardH - 44 } }
+
+    local pageH = gridCardY + gridCardH + M
+    pageBackground(W, pageH)
+
+  elseif currentPage == "Show Editor" then
+    ------------------------------------------------------------------------
+    -- Page 2: setup / authoring -- UDP targets, export/import, and the big
+    -- per-cue-per-action editor table (deliberately wide; meant to scroll).
+    ------------------------------------------------------------------------
+    local M = 16
+
+    -- Pre-compute the editor table's content width so every card on this
+    -- page shares one consistent full width.
+    local idxW, nameW, colorW, armW, confirmW, notesW = 26, 150, 64, 46, 46, 190
+    local fixedColsW = idxW + nameW + colorW + armW + confirmW + notesW
+    local fixedGapsW = 6 + 8 + 8 + 6 + 8 + 14
+    local typeW, targetW, controlW, valueW = 96, 136, 116, 130
+    local perActionW = typeW + targetW + controlW + valueW + 6 + 6 + 6 + 14
+    local editorContentW = fixedColsW + fixedGapsW + maxActions * perActionW
+    local W = math.max(920, editorContentW + 2 * M + 28)
+
+    title("SHOW CUE ENGINE  ~  Show Editor", M, 6, 600)
+
+    -- Panic / stop settings -----------------------------------------------------
+    local y = 30
+    card(M, y, W - 2 * M, 54, "GLOBAL STOP / PANIC SETTINGS")
+    layout["GlobalStopControlName"] = { PrettyName = "Player Stop Control Name", Style = "Text", Position = { 28, y + 18 }, Size = { 300, 26 } }
+    layout["PanicUdpPayload"] = { PrettyName = "Panic UDP Payload", Style = "Text", Position = { 344, y + 18 }, Size = { 300, 26 } }
+    y = y + 54 + 12
+
+    -- Export / Import -------------------------------------------------------------
+    card(M, y, W - 2 * M, 172, "EXPORT / IMPORT SHOW (copy-paste JSON)")
+    layout["ExportButton"] = { PrettyName = "Export Show", Style = "Button", ButtonStyle = "Trigger", Legend = "Export", Color = Accent, CornerRadius = 4, Position = { 28, y + 18 }, Size = { 100, 22 } }
+    layout["ExportData"] = { PrettyName = "Export JSON (copy this)", Style = "TextBox", Position = { 28, y + 46 }, Size = { 320, 100 } }
+    layout["ImportButton"] = { PrettyName = "Import Show", Style = "Button", ButtonStyle = "Trigger", Legend = "Import", Color = Accent, CornerRadius = 4, Position = { 364, y + 18 }, Size = { 100, 22 } }
+    layout["ImportData"] = { PrettyName = "Import JSON (paste here)", Style = "TextBox", Position = { 364, y + 46 }, Size = { 320, 100 } }
+    layout["ImportErrorText"] = { PrettyName = "Import Error", Style = "Text", Position = { 364, y + 150 }, Size = { 320, 18 } }
+    graphics[#graphics + 1] = {
+      Type = "Text",
+      Text = "Export first to see the exact JSON shape. A rejected import never partially overwrites the live show.",
+      FontSize = 9, Position = { 700, y + 46 }, Size = { W - 2 * M - 700 + M, 60 },
+    }
+    y = y + 172 + 12
+
+    -- UDP targets -------------------------------------------------------------------
+    local udpH = numUdp > 0 and (numUdp * 22 + 34) or 40
+    card(M, y, W - 2 * M, udpH, "UDP TARGETS")
+    if numUdp > 0 then
+      for i = 1, numUdp do
+        local ry = y + 24 + (i - 1) * 22
+        layout[key("UdpTargetName", numUdp, i)] = { PrettyName = string.format("UDP Target %d~Name", i), Style = "Text", Position = { 28, ry }, Size = { 140, 18 } }
+        layout[key("UdpTargetIp", numUdp, i)] = { PrettyName = string.format("UDP Target %d~IP", i), Style = "Text", Position = { 176, ry }, Size = { 120, 18 } }
+        layout[key("UdpTargetPort", numUdp, i)] = { PrettyName = string.format("UDP Target %d~Port", i), Style = "TextBox", TextBoxStyle = "Meter", Position = { 304, ry }, Size = { 80, 18 } }
+        layout[key("UdpTargetStatus", numUdp, i)] = { PrettyName = string.format("UDP Target %d~Status", i), Style = "Text", Position = { 392, ry }, Size = { 200, 18 } }
+      end
+    else
+      graphics[#graphics + 1] = { Type = "Text", Text = "No UDP targets configured (set the 'UDP Targets' Property to add some).", FontSize = 9, Position = { 28, y + 18 }, Size = { 500, 16 } }
     end
+    y = y + udpH + 12
+
+    -- Cue editor: one row per cue, Name/Color/Arm/Confirm/Notes then N action groups
+    local rowH = 22
+    local editorH = maxCues * rowH + 34 + 14
+    card(M, y, W - 2 * M, editorH, "CUE EDITOR")
+    local rowY = y + 30
+    for c = 1, maxCues do
+      local ry = rowY + (c - 1) * rowH
+      if c % 2 == 0 then
+        graphics[#graphics + 1] = { Type = "GroupBox", Fill = Muted, StrokeColor = Muted, StrokeWidth = 0, CornerRadius = 0, Position = { M + 6, ry - 2 }, Size = { W - 2 * M - 12, rowH } }
+      end
+      local x = M + 12
+      graphics[#graphics + 1] = { Type = "Text", Text = tostring(c), FontSize = 9, HTextAlign = "Right", Position = { x, ry }, Size = { idxW - 4, 18 } }
+      x = x + idxW + 6
+      layout[key("CueName", maxCues, c)] = { PrettyName = string.format("Cue %d~Name", c), Style = "Text", Position = { x, ry }, Size = { nameW, 18 } }
+      x = x + nameW + 8
+      layout[key("CueColor", maxCues, c)] = { PrettyName = string.format("Cue %d~Color (#RRGGBB)", c), Style = "Text", Position = { x, ry }, Size = { colorW, 18 } }
+      x = x + colorW + 8
+      layout[key("CueArm", maxCues, c)] = { PrettyName = string.format("Cue %d~Armed", c), Style = "Button", ButtonStyle = "Toggle", Legend = "Arm", Color = Success, CornerRadius = 4, Position = { x, ry }, Size = { armW, 18 } }
+      x = x + armW + 6
+      layout[key("CueConfirm", maxCues, c)] = { PrettyName = string.format("Cue %d~Confirm Before Fire", c), Style = "Button", ButtonStyle = "Toggle", Legend = "Cfm", Color = Warning, CornerRadius = 4, Position = { x, ry }, Size = { confirmW, 18 } }
+      x = x + confirmW + 8
+      layout[key("CueNotes", maxCues, c)] = { PrettyName = string.format("Cue %d~Notes (run sheet)", c), Style = "Text", Position = { x, ry }, Size = { notesW, 18 } }
+      x = x + notesW + 14
+      for a = 1, maxActions do
+        local s = (c - 1) * maxActions + a
+        layout[key("ActionType", maxSlots, s)] = { PrettyName = string.format("Cue %d~Action %d~Type", c, a), Style = "ComboBox", Position = { x, ry }, Size = { typeW, 18 } }
+        x = x + typeW + 6
+        layout[key("ActionTarget", maxSlots, s)] = { PrettyName = string.format("Cue %d~Action %d~Target (component / UDP target name)", c, a), Style = "ComboBox", Position = { x, ry }, Size = { targetW, 18 } }
+        x = x + targetW + 6
+        layout[key("ActionControl", maxSlots, s)] = { PrettyName = string.format("Cue %d~Action %d~Control name", c, a), Style = "ComboBox", Position = { x, ry }, Size = { controlW, 18 } }
+        x = x + controlW + 6
+        layout[key("ActionValue", maxSlots, s)] = { PrettyName = string.format("Cue %d~Action %d~Value (V:/P:/S:/T or UDP payload)", c, a), Style = "Text", Position = { x, ry }, Size = { valueW, 18 } }
+        x = x + valueW + 14
+      end
+    end
+    y = y + editorH + M
+
+    pageBackground(W, y)
   end
 
   return layout, graphics
@@ -277,12 +393,13 @@ local ActionTypes = { "none", "player_trigger", "udp_send", "named_control_set" 
 local ActionTypeSet = {}
 for _, t in ipairs(ActionTypes) do ActionTypeSet[t] = true end
 
+-- Matches the RGB palette used in GetControlLayout (Accent/Warning/Danger/Success).
 local StateColors = {
-  armed = "#2E6DA4",
-  firing = "#F0A500",
-  error = "#C62828",
-  ready = "#1FA34C",
-  neutral = "#555555",
+  armed = "#2962FF",
+  firing = "#D68C14",
+  error = "#CE2A33",
+  ready = "#18A05A",
+  neutral = "#6E7680",
 }
 
 -- ----------------------------------------------------------------------------
@@ -993,7 +1110,7 @@ Controls.ImportButton.EventHandler = function()
 end
 
 for i = 1, MaxCues do
-  Cues[i] = { name = "Cue " .. i, notes = "", color = "#3B3F45", armed = false, confirm = false, state = "idle", actions = {} }
+  Cues[i] = { name = "Cue " .. i, notes = "", color = "#465261", armed = false, confirm = false, state = "idle", actions = {} }
   for a = 1, MaxActions do
     Cues[i].actions[a] = { type = "none", target = "", control = "", value = "" }
   end

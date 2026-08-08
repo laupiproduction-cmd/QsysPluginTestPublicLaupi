@@ -20,10 +20,26 @@ extensions (`UdpSocket`, `Component`, `Controls`, `Timer`, `rapidjson`,
 2. Drag it onto the design canvas.
 3. Set its Properties (see below) to size the show, then wire up cues.
 
-The component's control panel is deliberately large — it's a full cue-sheet
-editor, one row per cue with every action's fields laid out left-to-right.
-View it in a resized Schematic view or on a large UCI/monitor; it is meant
-to scroll rather than fit in a small pane.
+The component has two pages (visible as tabs at the top of its properties/
+control panel in Designer):
+
+- **Live Show** — a compact, card-based operator view: show/lock strip,
+  status bar, GO/STOP ALL/PANIC transport, the quick-fire cue grid, and a
+  live activity log. Sized to fit comfortably on one screen (~920px wide).
+- **Show Editor** — the full authoring surface: global stop/panic settings,
+  export/import, UDP target config, and the complete per-cue/per-action
+  editor table (one row per cue, every action's fields laid out left to
+  right). This page is deliberately wide — it scales with **Max Actions Per
+  Cue** and is meant to be viewed in a resized Schematic view or scrolled,
+  not to fit in a small pane. Everything on it is setup/authoring, not
+  something an operator touches mid-show, which is why it's split off the
+  Live Show page.
+
+Paging is purely a Designer-canvas display choice — every control behaves
+identically regardless of which page it's shown on, and the two pages
+share one consistent color palette (blue accent, green/amber/red for
+success/warning/danger) with card-style grouped sections and section
+headings.
 
 ## Properties
 
@@ -156,10 +172,12 @@ specified:
 This build was checked with `luac5.3 -p` (syntax) and against a hand-written
 mock of the Q-SYS Lua runtime (`Controls`, `Component`, `UdpSocket`, `Timer`,
 `Ping`, `rapidjson`) that actually executes `GetProperties` / `GetControls`
-/ `GetControlLayout` plus the full runtime path — cue firing, debounce,
-confirm-before-fire, per-action error isolation, UDP send, export/import
-round-trip, and import rejection — across both default and boundary
-(`Max Cues`/`Max Actions Per Cue`/`UDP Targets` at 1 and at their maximums)
-Property configurations. It has **not** been run inside actual Q-SYS
-Designer or against real hardware — do that before a live show, per the
-persistence note above.
+/ `GetPages` / `GetControlLayout` plus the full runtime path — cue firing,
+debounce, confirm-before-fire, per-action error isolation, UDP send,
+export/import round-trip, and import rejection — across both default and
+boundary (`Max Cues`/`Max Actions Per Cue`/`UDP Targets` at 1 and at their
+maximums) Property configurations. The layout check also confirms every
+declared control appears on exactly one of the two pages (never both, never
+neither, except the intentionally-hidden `ShowData`). It has **not** been
+run inside actual Q-SYS Designer or against real hardware — do that before
+a live show, per the persistence note above.
