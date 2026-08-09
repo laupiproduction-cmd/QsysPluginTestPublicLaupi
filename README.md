@@ -75,12 +75,26 @@ Named Control convention: `input.<source>.output.<speaker>.gain` (dB).
 
 ## Runtime controls (per source / per speaker)
 
-- **Speakers**: Name, X/Y/Z position (draggable on the shared top-down pad
-  on the *Room Setup* page, or typed numerically), Trim (dB).
+Position entry is **typed numeric X/Y/Z**, one compact row per
+speaker/source — no drag pad to fight with. Each row also carries a small
+(48×48), read-only **preview blob**: its on-screen position mirrors X/Y
+("left/front" — a plain top-down view, X = left/right, Y = front/back), and
+its *color* encodes Z/height (blue = low, green = mid/ear height, red =
+high) instead of a third screen axis. It's purely a visual readout — click
+and drag do nothing there; you always edit position by typing into X/Y/Z.
+
+(An earlier version of this plugin used one giant draggable slider per axis
+spanning the whole canvas, shared across every speaker/source. In practice
+that's unusable — it covers/intercepts the whole canvas and it's ambiguous
+which handle you're even grabbing. This replaces it.)
+
+- **Speakers**: Name, X/Y/Z position, Trim (dB), preview blob.
 - **Sources**: Name, X/Y/Z position, Level (dB), Mute, Spread (0–100%),
-  Automation Mode (Path / External), Live Override, external X/Y/Z inputs
-  (for OSC/MIDI/show-control), path transport (Play/Stop/Loop), and a
-  waypoint grid (X/Y/Z/time-to-next/eased/active) per `MaxWaypoints` slot.
+  Automation Mode (Path / External), Live Override, preview blob (tracks
+  the source's live *effective* position — Path/External/Override motion,
+  not just manual edits), external X/Y/Z inputs (for OSC/MIDI/show-control),
+  path transport (Play/Stop/Loop), and a waypoint grid
+  (X/Y/Z/time-to-next/eased/active) per `MaxWaypoints` slot.
 - **Global**: triangulation status/diagnostics, a manual "recompute
   triangulation" trigger.
 
@@ -139,18 +153,30 @@ confirmed against real source before use:
   `.EventHandler` for the shared throttled update loop; `GetPages` +
   `props["page_index"]` for the tabbed Room Setup / Source Control / Global
   Settings layout.
+- `IsReadOnly` as a real `GetControlLayout` entry field ("makes a control
+  not able to be changed at runtime... good for status readouts", per a
+  community plugin-framework writeup) — used for the position preview
+  blobs.
+- `Controls[name].Color = "#RRGGBB"` as a settable **runtime** property
+  (confirmed via QSC's own support article, "Changing the color of a
+  button using Lua scripting") — used to recolor each preview blob by
+  height every time position updates.
 
-**Not independently confirmable given the above:** Q-SYS's stock 2D
-Positioner/Panner is a native (non-Lua) component, so its exact drag-widget
-implementation isn't inspectable from a plugin at all, regardless of docs
-access. This plugin instead builds its draggable top-down pad from a
-confirmed building block — `Style = "Fader"` on a Knob control — using two
-overlapping Faders (X and Y) per point sharing one canvas rectangle, each
-speaker/source rendered as its own distinctly-colored handle. Precise
-numeric X/Y/Z entry is always available alongside it as the authoritative
-fallback. If you have access to Designer and the official docs, it's worth
-double-checking this against the `GetControlLayout`/`Style` reference and
-adjusting if a more direct 2D-pad mechanism exists.
+**Note on the preview blob's screen position:** Q-SYS plugin layouts
+(`GetControlLayout`) are rebuilt only when a *Property* changes, never in
+response to a *Control* value changing — so a plugin cannot freely redraw
+an arbitrary graphic at a new screen position in response to, say, typing a
+new X value. The one exception is the native rendering of Knob/Fader-style
+controls themselves: their handle position is bound to their own value by
+Designer's own control rendering, independent of Lua. That's what the
+preview blob's X/Y position is actually built from — two small (48×48),
+`IsReadOnly = true` Fader-style controls (`SpeakerPreviewX/Y`,
+`SourcePreviewX/Y`) that Lua keeps mirrored to the real X/Y every time
+position changes (on edit for speakers, every tick for sources, so it
+tracks Path/External/Override motion too). This is a smaller, non-blocking
+version of the same confirmed building block the previous full-canvas drag
+pad used — just re-purposed as a read-only indicator instead of the primary
+input.
 
 ## Testing performed
 
@@ -158,11 +184,12 @@ The VBAP core math (triangulation, coherence search, spread blend, dB
 conversion) and the full runtime control flow (triangulation rebuild,
 debounced speaker edits, dirty-flag-gated gain updates, path automation
 timing/looping, Live Override + crossfade, mute, Internal/External mixer
-resolution) were verified with standalone Lua test harnesses against a
-mocked Q-SYS `Controls`/`Properties`/`Timer`/`Component` runtime — including
-full-sphere coverage sampling against an icosahedron-based speaker rig,
-degenerate coplanar-ring and singular-triple inputs, and duplicate-triangle
-collapsing for coplanar hull faces (e.g. a perfectly rectangular speaker
-wall). This was **not** tested inside an actual Q-SYS Designer/Core, since
+resolution, preview-blob position mirroring, and height-to-color mapping)
+were verified with standalone Lua test harnesses against a mocked Q-SYS
+`Controls`/`Properties`/`Timer`/`Component` runtime — including full-sphere
+coverage sampling against an icosahedron-based speaker rig, degenerate
+coplanar-ring and singular-triple inputs, and duplicate-triangle collapsing
+for coplanar hull faces (e.g. a perfectly rectangular speaker wall). This
+was **not** tested inside an actual Q-SYS Designer/Core, since
 neither was available in the environment this was built in — validate in
 Designer before a live show.

@@ -145,6 +145,11 @@ function GetControls(props)
   table.insert(ctrls, { Name = "SpeakerY", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = numSpeakers, PinStyle = "None", UserPin = false })
   table.insert(ctrls, { Name = "SpeakerZ", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = numSpeakers, PinStyle = "None", UserPin = false })
   table.insert(ctrls, { Name = "SpeakerTrim", ControlType = "Knob", ControlUnit = "dB", Min = -12, Max = 12, Count = numSpeakers, PinStyle = "None", UserPin = false })
+  -- Read-only mirrors of SpeakerX/Y, kept in sync by Lua, used only to
+  -- render the small non-interactive preview blob (position from X/Y,
+  -- color from Z) -- see GetControlLayout's IsReadOnly note.
+  table.insert(ctrls, { Name = "SpeakerPreviewX", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = numSpeakers, PinStyle = "None", UserPin = false })
+  table.insert(ctrls, { Name = "SpeakerPreviewY", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = numSpeakers, PinStyle = "None", UserPin = false })
 
   --------------------------------------------------------------
   -- Sources
@@ -164,6 +169,12 @@ function GetControls(props)
   table.insert(ctrls, { Name = "SourceExternalX", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = numSources, PinStyle = "Input", UserPin = true })
   table.insert(ctrls, { Name = "SourceExternalY", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = numSources, PinStyle = "Input", UserPin = true })
   table.insert(ctrls, { Name = "SourceExternalZ", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = numSources, PinStyle = "Input", UserPin = true })
+
+  -- Read-only preview mirrors, kept in sync every tick with the source's
+  -- *effective* position (so the blob tracks Path/External/Override motion
+  -- too, not just manual typed edits) -- see UpdateSourceGains.
+  table.insert(ctrls, { Name = "SourcePreviewX", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = numSources, PinStyle = "None", UserPin = false })
+  table.insert(ctrls, { Name = "SourcePreviewY", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = numSources, PinStyle = "None", UserPin = false })
 
   -- Path transport
   table.insert(ctrls, { Name = "PathPlay", ControlType = "Button", ButtonType = "Momentary", Count = numSources, PinStyle = "Input", UserPin = true })
@@ -199,15 +210,28 @@ end
 -- this (see README "API verification notes"). What IS confirmed (from a
 -- real working plugin's layout code) is the `Style = "Fader"` mechanic: a
 -- Knob control rendered as a linear draggable slider within its
--- Position/Size rectangle. This plugin uses two such Faders per point
--- (X and Y) sharing the SAME rectangle as a shared top-down canvas, one
--- handle per speaker/source, colored distinctly -- a practical
--- approximation of a 2D pad built entirely from confirmed building blocks.
--- Precise numeric Knob entry is always available alongside it as the
--- authoritative fallback.
-local CANVAS_POS = { 20, 50 }
-local CANVAS_SIZE = { 420, 420 }
-local ROW_H = 22
+-- Position/Size rectangle.
+--
+-- An earlier version of this layout used that mechanic directly for data
+-- entry: one full-page-sized Fader per axis per speaker/source, all sharing
+-- one shared canvas rectangle. In practice that's unusable -- N stacked
+-- full-size sliders occupy and intercept the entire canvas, so nothing
+-- underneath is clickable and it's ambiguous which handle you're even
+-- grabbing.
+--
+-- Position entry is now purely numeric (plain Knob controls, typed X/Y/Z,
+-- one compact row per speaker/source). The Fader mechanic is still used,
+-- but only for a small (48x48), IsReadOnly=true, PRIVATE-per-row preview:
+-- two tiny read-only Faders (X and Y) sharing just that one row's small
+-- box -- never the whole canvas, never shared across rows, and never
+-- draggable, so it can't block anything. Height (Z) isn't shown as a
+-- screen position at all -- it's encoded by recoloring that same preview
+-- blob at runtime (blue = low, green = mid/ear height, red = high), via
+-- Controls[name].Color, which QSC's own support docs confirm is settable
+-- at runtime (see README "API verification notes").
+local ROW_P = 56   -- row height for rows that include a position preview blob
+local ROW_H = 22   -- row height for plain control rows (transport, waypoints)
+local PB = 48       -- preview blob box size (square)
 
 function GetControlLayout(props)
   local layout = {}
@@ -227,70 +251,61 @@ function GetControlLayout(props)
     return name .. " " .. i
   end
 
-  local function addRoomGrid(pos, size)
+  -- Small, non-interactive position+height preview for one speaker/source
+  -- row: a faint background box, plus two tiny IsReadOnly Faders (X, Y)
+  -- sharing it. Their actual .Color is set at runtime from Z; the Color
+  -- given here is only the pre-first-tick default.
+  local function addPreviewBlob(nameX, nameY, i, count, x, y)
     table.insert(graphics, {
-      Type = "GroupBox", Text = string.format("Top-Down Room View (X/Y, %s)", units),
-      HTextAlign = "Left", IsBold = true,
-      Fill = Colors.Panel, StrokeColor = Colors.Grid, StrokeWidth = 1,
-      CornerRadius = 6, Position = { pos[1] - 10, pos[2] - 30 },
-      Size = { size[1] + 20, size[2] + 50 }, ZOrder = 1,
+      Type = "GroupBox", Text = "", Fill = Colors.Panel, StrokeColor = Colors.Grid,
+      StrokeWidth = 1, CornerRadius = 4, Position = { x, y }, Size = { PB, PB }, ZOrder = 2,
     })
-    -- center crosshair (the room reference / listening origin, X=Y=Z=0)
-    table.insert(graphics, {
-      Type = "Line", Position = { pos[1], pos[2] + size[2] / 2 },
-      Size = { size[1], 0 }, StrokeColor = Colors.Grid, StrokeWidth = 1, ZOrder = 2,
-    })
-    table.insert(graphics, {
-      Type = "Line", Position = { pos[1] + size[1] / 2, pos[2] },
-      Size = { 0, size[2] }, StrokeColor = Colors.Grid, StrokeWidth = 1, ZOrder = 2,
-    })
-    table.insert(graphics, {
-      Type = "Label", Text = "origin (sweet spot)", TextSize = 10,
-      Color = Colors.Text, Position = { pos[1] + size[1] / 2 + 4, pos[2] + size[2] / 2 + 2 },
-      Size = { 120, 14 }, ZOrder = 3,
-    })
+    layout[ctrlKey(nameX, i, count)] = {
+      PrettyName = string.format("%s %d~Preview X (read-only)", nameX, i),
+      Style = "Fader", Color = Colors.Grid, IsReadOnly = true,
+      Position = { x, y }, Size = { PB, PB }, ZOrder = 3,
+    }
+    layout[ctrlKey(nameY, i, count)] = {
+      PrettyName = string.format("%s %d~Preview Y (read-only)", nameY, i),
+      Style = "Fader", Color = Colors.Grid, IsReadOnly = true,
+      Position = { x, y }, Size = { PB, PB }, ZOrder = 4,
+    }
   end
 
   ----------------------------------------------------------------
   -- Room Setup page
   ----------------------------------------------------------------
   if CurrentPage == "Room Setup" then
-    addRoomGrid(CANVAS_POS, CANVAS_SIZE)
-
+    local listX = 20
+    local top = 50
+    table.insert(graphics, {
+      Type = "Header",
+      Text = string.format("Speaker      Name          X (%s)   Y (%s)   Z/height (%s)   Trim     Preview (xy pos, color=height)", units, units, units),
+      Position = { listX, top - 20 }, Size = { 560, 16 }, ZOrder = 3,
+    })
     for i = 1, numSpeakers do
-      local col = SpeakerMarkerColor(i)
+      local y = top + (i - 1) * ROW_P
+      layout[ctrlKey("SpeakerName", i, numSpeakers)] = {
+        PrettyName = string.format("Speaker %d~Name", i),
+        Position = { listX, y + 16 }, Size = { 100, ROW_H - 2 }, ZOrder = 3,
+      }
       layout[ctrlKey("SpeakerX", i, numSpeakers)] = {
         PrettyName = string.format("Speaker %d~X Position", i),
-        Style = "Fader", Color = col,
-        Position = CANVAS_POS, Size = CANVAS_SIZE, ZOrder = 10 + i,
+        Position = { listX + 104, y + 16 }, Size = { 55, ROW_H - 2 }, ZOrder = 3,
       }
       layout[ctrlKey("SpeakerY", i, numSpeakers)] = {
         PrettyName = string.format("Speaker %d~Y Position", i),
-        Style = "Fader", Color = col,
-        Position = CANVAS_POS, Size = CANVAS_SIZE, ZOrder = 10 + i,
-      }
-    end
-
-    -- Compact per-speaker detail rows: Name / Z (height) / Trim, to the right of the canvas.
-    local listX = CANVAS_POS[1] + CANVAS_SIZE[1] + 30
-    table.insert(graphics, {
-      Type = "Header", Text = "Speaker  |  Name          Z (height)   Trim",
-      Position = { listX, CANVAS_POS[2] - 20 }, Size = { 320, 16 }, ZOrder = 3,
-    })
-    for i = 1, numSpeakers do
-      local y = CANVAS_POS[2] + (i - 1) * ROW_H
-      layout[ctrlKey("SpeakerName", i, numSpeakers)] = {
-        PrettyName = string.format("Speaker %d~Name", i),
-        Position = { listX, y }, Size = { 110, ROW_H - 2 }, ZOrder = 3,
+        Position = { listX + 163, y + 16 }, Size = { 55, ROW_H - 2 }, ZOrder = 3,
       }
       layout[ctrlKey("SpeakerZ", i, numSpeakers)] = {
         PrettyName = string.format("Speaker %d~Z Height", i),
-        Position = { listX + 115, y }, Size = { 90, ROW_H - 2 }, ZOrder = 3,
+        Position = { listX + 222, y + 16 }, Size = { 55, ROW_H - 2 }, ZOrder = 3,
       }
       layout[ctrlKey("SpeakerTrim", i, numSpeakers)] = {
         PrettyName = string.format("Speaker %d~Trim", i),
-        Position = { listX + 210, y }, Size = { 90, ROW_H - 2 }, ZOrder = 3,
+        Position = { listX + 281, y + 16 }, Size = { 55, ROW_H - 2 }, ZOrder = 3,
       }
+      addPreviewBlob("SpeakerPreviewX", "SpeakerPreviewY", i, numSpeakers, listX + 344, y + 4)
     end
   end
 
@@ -298,97 +313,92 @@ function GetControlLayout(props)
   -- Source Control page
   ----------------------------------------------------------------
   if CurrentPage == "Source Control" then
-    addRoomGrid(CANVAS_POS, CANVAS_SIZE)
-
+    local listX = 20
+    local top = 50
+    table.insert(graphics, {
+      Type = "Header",
+      Text = "Source   Name   X    Y    Z   Level Mute Spread Mode Ovr  Preview (xy pos, color=height)",
+      Position = { listX, top - 20 }, Size = { 620, 16 }, ZOrder = 3,
+    })
     for i = 1, numSources do
-      local col = SpeakerMarkerColor(i)
+      local y = top + (i - 1) * ROW_P
+      layout[ctrlKey("SourceName", i, numSources)] = {
+        PrettyName = string.format("Source %d~Name", i),
+        Position = { listX, y + 16 }, Size = { 76, ROW_H - 2 }, ZOrder = 3,
+      }
       layout[ctrlKey("SourceX", i, numSources)] = {
         PrettyName = string.format("Source %d~X Position", i),
-        Style = "Fader", Color = col,
-        Position = CANVAS_POS, Size = CANVAS_SIZE, ZOrder = 10 + i,
+        Position = { listX + 80, y + 16 }, Size = { 50, ROW_H - 2 }, ZOrder = 3,
       }
       layout[ctrlKey("SourceY", i, numSources)] = {
         PrettyName = string.format("Source %d~Y Position", i),
-        Style = "Fader", Color = col,
-        Position = CANVAS_POS, Size = CANVAS_SIZE, ZOrder = 10 + i,
-      }
-    end
-
-    local listX = CANVAS_POS[1] + CANVAS_SIZE[1] + 30
-    table.insert(graphics, {
-      Type = "Header", Text = "Source strip: Name / Z / Level / Mute / Spread / Mode / Override",
-      Position = { listX, CANVAS_POS[2] - 20 }, Size = { 460, 16 }, ZOrder = 3,
-    })
-    for i = 1, numSources do
-      local y = CANVAS_POS[2] + (i - 1) * ROW_H
-      layout[ctrlKey("SourceName", i, numSources)] = {
-        PrettyName = string.format("Source %d~Name", i),
-        Position = { listX, y }, Size = { 80, ROW_H - 2 }, ZOrder = 3,
+        Position = { listX + 134, y + 16 }, Size = { 50, ROW_H - 2 }, ZOrder = 3,
       }
       layout[ctrlKey("SourceZ", i, numSources)] = {
         PrettyName = string.format("Source %d~Z Height", i),
-        Position = { listX + 82, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
+        Position = { listX + 188, y + 16 }, Size = { 50, ROW_H - 2 }, ZOrder = 3,
       }
       layout[ctrlKey("SourceLevel", i, numSources)] = {
         PrettyName = string.format("Source %d~Level", i),
-        Position = { listX + 146, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
+        Position = { listX + 242, y + 16 }, Size = { 50, ROW_H - 2 }, ZOrder = 3,
       }
       layout[ctrlKey("SourceMute", i, numSources)] = {
         PrettyName = string.format("Source %d~Mute", i), Legend = "M",
-        Position = { listX + 210, y }, Size = { 24, ROW_H - 2 }, ZOrder = 3,
+        Position = { listX + 296, y + 16 }, Size = { 24, ROW_H - 2 }, ZOrder = 3,
       }
       layout[ctrlKey("SourceSpread", i, numSources)] = {
         PrettyName = string.format("Source %d~Spread", i),
-        Position = { listX + 236, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
+        Position = { listX + 324, y + 16 }, Size = { 50, ROW_H - 2 }, ZOrder = 3,
       }
       layout[ctrlKey("SourceAutoMode", i, numSources)] = {
         PrettyName = string.format("Source %d~Automation Mode (off=Path, on=External)", i),
         Legend = "Ext", OffColor = { 90, 90, 95 }, Color = Colors.Accent,
-        Position = { listX + 300, y }, Size = { 40, ROW_H - 2 }, ZOrder = 3,
+        Position = { listX + 378, y + 16 }, Size = { 36, ROW_H - 2 }, ZOrder = 3,
       }
       layout[ctrlKey("SourceLiveOverride", i, numSources)] = {
         PrettyName = string.format("Source %d~Live Override", i),
         Legend = "LO", OffColor = { 90, 90, 95 }, Color = Colors.Warn,
-        Position = { listX + 344, y }, Size = { 36, ROW_H - 2 }, ZOrder = 3,
+        Position = { listX + 418, y + 16 }, Size = { 32, ROW_H - 2 }, ZOrder = 3,
       }
+      addPreviewBlob("SourcePreviewX", "SourcePreviewY", i, numSources, listX + 454, y + 4)
     end
 
-    -- Path transport + external control target, one row per source, below the canvas.
-    local transportY = CANVAS_POS[2] + CANVAS_SIZE[2] + 40
+    -- Path transport + external control target, one row per source, below the position/preview list.
+    local transportY = top + numSources * ROW_P + 30
     table.insert(graphics, {
       Type = "Header", Text = "Path Transport & External Position Inputs (OSC / MIDI / show control)",
-      Position = { CANVAS_POS[1], transportY - 20 }, Size = { 700, 16 }, ZOrder = 3,
+      Position = { listX, transportY - 20 }, Size = { 700, 16 }, ZOrder = 3,
     })
     for i = 1, numSources do
       local y = transportY + (i - 1) * ROW_H
       layout[ctrlKey("PathPlay", i, numSources)] = {
         PrettyName = string.format("Source %d~Path Play", i), Legend = "Play",
-        Position = { CANVAS_POS[1], y }, Size = { 50, ROW_H - 2 }, ZOrder = 3,
+        Position = { listX, y }, Size = { 50, ROW_H - 2 }, ZOrder = 3,
       }
       layout[ctrlKey("PathStop", i, numSources)] = {
         PrettyName = string.format("Source %d~Path Stop", i), Legend = "Stop",
-        Position = { CANVAS_POS[1] + 54, y }, Size = { 50, ROW_H - 2 }, ZOrder = 3,
+        Position = { listX + 54, y }, Size = { 50, ROW_H - 2 }, ZOrder = 3,
       }
       layout[ctrlKey("PathLoop", i, numSources)] = {
         PrettyName = string.format("Source %d~Path Loop", i), Legend = "Loop",
         OffColor = { 90, 90, 95 }, Color = Colors.Accent,
-        Position = { CANVAS_POS[1] + 108, y }, Size = { 50, ROW_H - 2 }, ZOrder = 3,
+        Position = { listX + 108, y }, Size = { 50, ROW_H - 2 }, ZOrder = 3,
       }
       layout[ctrlKey("PathStatus", i, numSources)] = {
         PrettyName = string.format("Source %d~Path Status", i),
-        Position = { CANVAS_POS[1] + 162, y }, Size = { 140, ROW_H - 2 }, ZOrder = 3,
+        Position = { listX + 162, y }, Size = { 140, ROW_H - 2 }, ZOrder = 3,
       }
       layout[ctrlKey("SourceExternalX", i, numSources)] = {
         PrettyName = string.format("Source %d~External X", i),
-        Position = { CANVAS_POS[1] + 306, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
+        Position = { listX + 306, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
       }
       layout[ctrlKey("SourceExternalY", i, numSources)] = {
         PrettyName = string.format("Source %d~External Y", i),
-        Position = { CANVAS_POS[1] + 370, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
+        Position = { listX + 370, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
       }
       layout[ctrlKey("SourceExternalZ", i, numSources)] = {
         PrettyName = string.format("Source %d~External Z", i),
-        Position = { CANVAS_POS[1] + 434, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
+        Position = { listX + 434, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
       }
     end
 
@@ -398,12 +408,12 @@ function GetControlLayout(props)
     local wpTop = transportY + numSources * ROW_H + 30
     table.insert(graphics, {
       Type = "Header", Text = "Path Waypoints (per source: X, Y, Z, time-to-next (s), eased, active)",
-      Position = { CANVAS_POS[1], wpTop - 20 }, Size = { 560, 16 }, ZOrder = 3,
+      Position = { listX, wpTop - 20 }, Size = { 560, 16 }, ZOrder = 3,
     })
     for s = 1, numSources do
       table.insert(graphics, {
         Type = "Label", Text = string.format("Source %d path:", s), IsBold = true,
-        Color = Colors.Text, Position = { CANVAS_POS[1], wpTop + (s - 1) * (maxWp + 1) * ROW_H },
+        Color = Colors.Text, Position = { listX, wpTop + (s - 1) * (maxWp + 1) * ROW_H },
         Size = { 200, ROW_H - 2 }, ZOrder = 3,
       })
       for w = 1, maxWp do
@@ -411,29 +421,29 @@ function GetControlLayout(props)
         local y = wpTop + (s - 1) * (maxWp + 1) * ROW_H + w * ROW_H
         layout[ctrlKey("WaypointX", flatIdx, numSources * maxWp)] = {
           PrettyName = string.format("Source %d Waypoint %d~X", s, w),
-          Position = { CANVAS_POS[1], y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
+          Position = { listX, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
         }
         layout[ctrlKey("WaypointY", flatIdx, numSources * maxWp)] = {
           PrettyName = string.format("Source %d Waypoint %d~Y", s, w),
-          Position = { CANVAS_POS[1] + 64, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
+          Position = { listX + 64, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
         }
         layout[ctrlKey("WaypointZ", flatIdx, numSources * maxWp)] = {
           PrettyName = string.format("Source %d Waypoint %d~Z", s, w),
-          Position = { CANVAS_POS[1] + 128, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
+          Position = { listX + 128, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
         }
         layout[ctrlKey("WaypointTime", flatIdx, numSources * maxWp)] = {
           PrettyName = string.format("Source %d Waypoint %d~Time to next (s)", s, w),
-          Position = { CANVAS_POS[1] + 192, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
+          Position = { listX + 192, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
         }
         layout[ctrlKey("WaypointEase", flatIdx, numSources * maxWp)] = {
           PrettyName = string.format("Source %d Waypoint %d~Eased", s, w), Legend = "Ease",
           OffColor = { 90, 90, 95 }, Color = Colors.Accent,
-          Position = { CANVAS_POS[1] + 256, y }, Size = { 46, ROW_H - 2 }, ZOrder = 3,
+          Position = { listX + 256, y }, Size = { 46, ROW_H - 2 }, ZOrder = 3,
         }
         layout[ctrlKey("WaypointActive", flatIdx, numSources * maxWp)] = {
           PrettyName = string.format("Source %d Waypoint %d~Active", s, w), Legend = "On",
           OffColor = { 90, 90, 95 }, Color = Colors.Speaker,
-          Position = { CANVAS_POS[1] + 304, y }, Size = { 40, ROW_H - 2 }, ZOrder = 3,
+          Position = { listX + 304, y }, Size = { 40, ROW_H - 2 }, ZOrder = 3,
         }
       end
     end
@@ -897,6 +907,24 @@ end
 local function lerp(a, b, t) return a + (b - a) * t end
 local function smoothstep(t) return t * t * (3 - 2 * t) end
 
+-- Maps height z in [-extent, extent] to a blue (low) -> green (mid/ear
+-- height) -> red (high) hex color string, for recoloring a preview blob at
+-- runtime. Controls[name].Color accepts "#RRGGBB" per QSC's own Lua
+-- scripting how-to (see README "API verification notes").
+local function ColorForHeight(z, extent)
+  local t = (z + extent) / (2 * extent)
+  if t < 0 then t = 0 elseif t > 1 then t = 1 end
+  local r, g, b
+  if t < 0.5 then
+    local k = t / 0.5
+    r, g, b = 0, math.floor(255 * k), math.floor(255 * (1 - k))
+  else
+    local k = (t - 0.5) / 0.5
+    r, g, b = math.floor(255 * k), math.floor(255 * (1 - k)), 0
+  end
+  return string.format("#%02X%02X%02X", r, g, b)
+end
+
 --============================================================
 -- Plugin state
 --============================================================
@@ -942,6 +970,23 @@ local function WriteCrosspointGain(srcIdx, spkIdx, dB)
   if ctrl then ctrl.Value = dB end
 end
 
+-- Mirrors the read-only preview blob to a given (x,y,z): position from x/y,
+-- color from z. Called for speakers whenever their geometry changes, and
+-- for sources every tick (so the blob tracks Path/External/Override motion
+-- live, not just manual typed edits).
+local function SyncPreviewBlob(previewXCtrl, previewYCtrl, x, y, z)
+  previewXCtrl.Value = x
+  previewYCtrl.Value = y
+  local col = ColorForHeight(z, Properties["RoomExtent"].Value)
+  previewXCtrl.Color = col
+  previewYCtrl.Color = col
+end
+
+local function SyncSpeakerPreview(j)
+  SyncPreviewBlob(Controls.SpeakerPreviewX[j], Controls.SpeakerPreviewY[j],
+    Controls.SpeakerX[j].Value, Controls.SpeakerY[j].Value, Controls.SpeakerZ[j].Value)
+end
+
 --------------------------------------------------------------
 -- Triangulation (setup phase -- recomputed only when the room/speaker
 -- layout changes, never per-frame; see debounce timer further down).
@@ -955,6 +1000,7 @@ local function RebuildTriangulation()
     local dir, len = vnorm({ x, y, z })
     if len < 1e-6 then dir = { 0, 0, 1 } end -- speaker sitting exactly on the origin: arbitrary stable direction, don't crash
     speakers[j] = { x = x, y = y, z = z, dir = dir }
+    SyncSpeakerPreview(j)
   end
 
   triangles, isDegenerate2D = build_triangulation(speakers)
@@ -1023,6 +1069,8 @@ local function UpdateSourceGains(i)
   local x, y, z = ResolvePosition(i)
   local dir = vnorm({ x, y, z })
   if vlen({ x, y, z }) < 1e-6 then dir = { 0, 0, 1 } end -- source exactly at origin: arbitrary stable direction
+
+  SyncPreviewBlob(Controls.SourcePreviewX[i], Controls.SourcePreviewY[i], x, y, z)
 
   if #triangles == 0 then
     for j = 1, numSpeakers do
