@@ -2,12 +2,19 @@
   Show Control ~ Cue Engine
   ---------------------------------------------------------------------------
   A live-show cue engine for Q-SYS Designer. Up to 30 operator-programmable
-  cues, each firing multiple simultaneous actions:
+  cues, each firing an ORDERED list of actions (reorderable with Move Up/
+  Down on the Show Editor page -- array position IS firing order):
     - player_trigger      : invoke a control (e.g. Play/Stop/Cue) on a named
                              Media/Stream Player (or any) component
     - udp_send             : send an ASCII payload to a configured UDP target
     - named_control_set    : set .Value / .Position / .String or :Trigger()
                              on any Named Control of any component
+    - wait                 : pause the REST of this cue's actions for a
+                             number of seconds (its Value field) before
+                             continuing -- everything before it has already
+                             fired by the time it's reached; with no wait
+                             actions, a cue's actions still dispatch back to
+                             back as fast as Lua can loop through them.
 
   Three pages:
     - Live Show   : status bar, transport, quick-fire cue grid, activity log
@@ -27,9 +34,9 @@
 
 PluginInfo = {
   Name = "Show Control~CueEngine",
-  Version = "1.1.0",
+  Version = "1.2.0",
   Id = "com.yourcompany.showcontrol.cueengine",
-  Description = "Live-show cue engine: up to 30 cues, each firing multiple simultaneous actions (player triggers, UDP, named controls).",
+  Description = "Live-show cue engine: up to 30 cues, each firing a reorderable, optionally-delayed sequence of actions (player triggers, UDP, named controls, wait).",
   ShowDebug = true,
 }
 
@@ -179,6 +186,8 @@ function GetControls(props)
   add({ Name = "ActionControl", ControlType = "Text", Count = maxActions })
   add({ Name = "ActionValue", ControlType = "Text", Count = maxActions })
   add({ Name = "ActionValueBool", ControlType = "Button", ButtonType = "Toggle", Count = maxActions })
+  add({ Name = "ActionMoveUp", ControlType = "Button", ButtonType = "Trigger", Count = maxActions })
+  add({ Name = "ActionMoveDown", ControlType = "Button", ButtonType = "Trigger", Count = maxActions })
   add({ Name = "ActionRemove", ControlType = "Button", ButtonType = "Trigger", Count = maxActions })
 
   return ctrls
@@ -439,23 +448,29 @@ function GetControlLayout(props)
     layout["CueConditionRequired"] = { PrettyName = "Cue Condition~Required State", Style = "Button", ButtonStyle = "Toggle", Legend = "Must be ON", Color = Success, OffColor = { 150, 155, 162 }, CornerRadius = 4, Position = { 430, y + 74 }, Size = { 110, 20 } }
     graphics[#graphics + 1] = { Type = "Text", Text = "Optional -- leave Condition off to always allow this cue to fire.", FontSize = 8, Position = { 544, y + 76 }, Size = { W - 2 * M - 544 + M, 16 } }
 
-    graphics[#graphics + 1] = { Type = "Text", Text = "Type", FontSize = 8, Position = { 28, y + 102 }, Size = { 110, 12 } }
-    graphics[#graphics + 1] = { Type = "Text", Text = "Target (device / UDP target)", FontSize = 8, Position = { 146, y + 102 }, Size = { 160, 12 } }
-    graphics[#graphics + 1] = { Type = "Text", Text = "Control", FontSize = 8, Position = { 314, y + 102 }, Size = { 140, 12 } }
-    graphics[#graphics + 1] = { Type = "Text", Text = "Value (auto: toggle for Boolean controls, text otherwise)", FontSize = 8, Position = { 462, y + 102 }, Size = { 160, 12 } }
+    graphics[#graphics + 1] = { Type = "Text", Text = "#", FontSize = 8, Position = { 28, y + 102 }, Size = { 20, 12 } }
+    graphics[#graphics + 1] = { Type = "Text", Text = "Type", FontSize = 8, Position = { 52, y + 102 }, Size = { 98, 12 } }
+    graphics[#graphics + 1] = { Type = "Text", Text = "Target (device / UDP target)", FontSize = 8, Position = { 154, y + 102 }, Size = { 148, 12 } }
+    graphics[#graphics + 1] = { Type = "Text", Text = "Control", FontSize = 8, Position = { 306, y + 102 }, Size = { 128, 12 } }
+    graphics[#graphics + 1] = { Type = "Text", Text = "Value (toggle if Boolean; wait = seconds)", FontSize = 8, Position = { 438, y + 102 }, Size = { 140, 12 } }
 
     local rowsY = y + 116
     for a = 1, maxActions do
       local ry = rowsY + (a - 1) * rowH
-      layout[key("ActionType", maxActions, a)] = { PrettyName = string.format("Action %d~Type", a), Style = "ComboBox", Position = { 28, ry }, Size = { 110, 20 } }
-      layout[key("ActionTarget", maxActions, a)] = { PrettyName = string.format("Action %d~Target", a), Style = "ComboBox", Position = { 146, ry }, Size = { 160, 20 } }
-      layout[key("ActionControl", maxActions, a)] = { PrettyName = string.format("Action %d~Control", a), Style = "ComboBox", Position = { 314, ry }, Size = { 140, 20 } }
+      -- "#" is the action's firing order (1st, 2nd, ...) -- also its array
+      -- position, which the Move Up/Down buttons swap directly.
+      graphics[#graphics + 1] = { Type = "Text", Text = tostring(a) .. ".", FontSize = 9, HTextAlign = "Right", Position = { 28, ry }, Size = { 20, 20 } }
+      layout[key("ActionType", maxActions, a)] = { PrettyName = string.format("Action %d~Type", a), Style = "ComboBox", Position = { 52, ry }, Size = { 98, 20 } }
+      layout[key("ActionTarget", maxActions, a)] = { PrettyName = string.format("Action %d~Target", a), Style = "ComboBox", Position = { 154, ry }, Size = { 148, 20 } }
+      layout[key("ActionControl", maxActions, a)] = { PrettyName = string.format("Action %d~Control", a), Style = "ComboBox", Position = { 306, ry }, Size = { 128, 20 } }
       -- ActionValue (free text) and ActionValueBool (toggle) occupy the exact
       -- same rect -- only one is ever visible at a time (runtime picks based
       -- on the selected control's discovered Type), so they swap seamlessly.
-      layout[key("ActionValue", maxActions, a)] = { PrettyName = string.format("Action %d~Value", a), Style = "Text", Position = { 462, ry }, Size = { 160, 20 } }
-      layout[key("ActionValueBool", maxActions, a)] = { PrettyName = string.format("Action %d~Value (Boolean)", a), Style = "Button", ButtonStyle = "Toggle", Legend = "FALSE", Color = Success, OffColor = { 150, 155, 162 }, CornerRadius = 4, Position = { 462, ry }, Size = { 160, 20 } }
-      layout[key("ActionRemove", maxActions, a)] = { PrettyName = string.format("Action %d~Remove", a), Style = "Button", ButtonStyle = "Trigger", Legend = "X", Color = Danger, CornerRadius = 4, Position = { 630, ry }, Size = { 30, 20 } }
+      layout[key("ActionValue", maxActions, a)] = { PrettyName = string.format("Action %d~Value", a), Style = "Text", Position = { 438, ry }, Size = { 140, 20 } }
+      layout[key("ActionValueBool", maxActions, a)] = { PrettyName = string.format("Action %d~Value (Boolean)", a), Style = "Button", ButtonStyle = "Toggle", Legend = "FALSE", Color = Success, OffColor = { 150, 155, 162 }, CornerRadius = 4, Position = { 438, ry }, Size = { 140, 20 } }
+      layout[key("ActionMoveUp", maxActions, a)] = { PrettyName = string.format("Action %d~Move Up", a), Style = "Button", ButtonStyle = "Trigger", Legend = "^", CornerRadius = 4, Position = { 582, ry }, Size = { 26, 20 } }
+      layout[key("ActionMoveDown", maxActions, a)] = { PrettyName = string.format("Action %d~Move Down", a), Style = "Button", ButtonStyle = "Trigger", Legend = "v", CornerRadius = 4, Position = { 610, ry }, Size = { 26, 20 } }
+      layout[key("ActionRemove", maxActions, a)] = { PrettyName = string.format("Action %d~Remove", a), Style = "Button", ButtonStyle = "Trigger", Legend = "X", Color = Danger, CornerRadius = 4, Position = { 640, ry }, Size = { 26, 20 } }
     end
     layout["AddActionButton"] = { PrettyName = "Add Action", Style = "Button", ButtonStyle = "Trigger", Legend = "+ Add Action", Color = Accent, CornerRadius = 4, Position = { 28, rowsY + maxActions * rowH + 8 }, Size = { 130, 22 } }
 
@@ -481,7 +496,7 @@ local MaxDevices = Properties["Max Devices"].Value
 local NumUdp = Properties["UDP Targets"].Value
 local DebugOn = Properties["Show Debug"].Value
 
-local ActionTypes = { "none", "player_trigger", "udp_send", "named_control_set" }
+local ActionTypes = { "none", "player_trigger", "udp_send", "named_control_set", "wait" }
 local ActionTypeSet = {}
 for _, t in ipairs(ActionTypes) do ActionTypeSet[t] = true end
 
@@ -511,6 +526,8 @@ local DoPlayerTrigger, DoNamedControlSet, DoUdpSend, DispatchAction, ParseValueS
 local FindUdpTargetByName, OpenUdpSocket
 local SetStatusMessage, SetError, UpdateStatus, LogCueFire
 local FireCueNow, OnCueButtonPressed, StopAllPlayers, StartPingHeartbeat, CallAfter
+local DispatchCueActions, FinishCueFire, CancelAllPendingWaits
+local MoveActionUp, MoveActionDown
 local EvaluateCondition, CheckCueConditions, PopulateConditionControlChoices
 local RefreshConditionEditorVisibility, RefreshGlobalConditionVisibility, PushGlobalConditionToControls
 local RefreshCueNotesDisplays, ResetPlaybackState, ResetShow
@@ -555,7 +572,8 @@ end
 
 -- One-shot timer helper built on the confirmed Timer.New()/.EventHandler/:Start()/:Stop()
 -- pattern (there is no separate Timer.CallAfter used here, to avoid relying on an
--- unverified API surface).
+-- unverified API surface). Returns the Timer object so a caller can cancel a
+-- pending callback early (e.g. a "wait" action's continuation) via :Stop().
 CallAfter = function(fn, seconds)
   local t = Timer.New()
   t.EventHandler = function()
@@ -563,6 +581,7 @@ CallAfter = function(fn, seconds)
     fn()
   end
   t:Start(seconds)
+  return t
 end
 
 ClampActionType = function(t)
@@ -727,7 +746,7 @@ end
 RefreshActionValueEditor = function(a)
   local act = Cues[SelectedCueIndex].actions[a]
   local showText, showBool = false, false
-  if act.type == "udp_send" then
+  if act.type == "udp_send" or act.type == "wait" then
     showText = true
   elseif act.type == "named_control_set" then
     local compName = ResolveDeviceComponent(act.target)
@@ -1121,11 +1140,17 @@ RefreshActionRowVisibility = function()
       Controls.ActionType[a].IsInvisible = not visible
       Controls.ActionTarget[a].IsInvisible = not visible
       Controls.ActionControl[a].IsInvisible = not visible
+      Controls.ActionMoveUp[a].IsInvisible = not visible
+      Controls.ActionMoveDown[a].IsInvisible = not visible
       Controls.ActionRemove[a].IsInvisible = not visible
     end)
     if visible then
       -- Active row: let RefreshActionValueEditor decide Value vs. Value(Boolean).
       RefreshActionValueEditor(a)
+      pcall(function()
+        Controls.ActionMoveUp[a].IsDisabled = (a <= 1)
+        Controls.ActionMoveDown[a].IsDisabled = (a >= c.activeActions)
+      end)
     else
       pcall(function()
         Controls.ActionValue[a].IsInvisible = true
@@ -1134,6 +1159,26 @@ RefreshActionRowVisibility = function()
     end
   end
   pcall(function() Controls.AddActionButton.IsDisabled = (c.activeActions >= MaxActions) end)
+end
+
+-- Reorders actions within the SELECTED cue by swapping adjacent slots --
+-- array position IS firing order, so this is the entire implementation;
+-- persistence/export/import already just walk the actions array in order.
+MoveActionUp = function(a)
+  if a <= 1 then return end
+  local acts = Cues[SelectedCueIndex].actions
+  acts[a], acts[a - 1] = acts[a - 1], acts[a]
+  PushSelectedCueToEditor()
+  MarkDirty(); SaveShowData()
+end
+
+MoveActionDown = function(a)
+  local c = Cues[SelectedCueIndex]
+  if a >= c.activeActions then return end
+  local acts = c.actions
+  acts[a], acts[a + 1] = acts[a + 1], acts[a]
+  PushSelectedCueToEditor()
+  MarkDirty(); SaveShowData()
 end
 
 PushSelectedCueToEditor = function()
@@ -1267,11 +1312,34 @@ LogCueFire = function(i, success, statusLabel)
   if DebugOn then print("[CueEngine] " .. line) end
 end
 
+-- Cancels any cue currently mid-fire on a "wait" delay -- stops its pending
+-- Timer so the queued remainder of its actions never dispatches, and marks
+-- it CANCELLED in the log rather than leaving it silently stuck showing
+-- "Firing". Used by STOP ALL, PANIC, and Reset Show, none of which should
+-- let a delayed action sneak out after the operator has told the show to
+-- stop or start over.
+CancelAllPendingWaits = function()
+  for idx = 1, MaxCues do
+    local c = Cues[idx]
+    if c.firing then
+      if c.pendingTimer then
+        pcall(function() c.pendingTimer:Stop() end)
+      end
+      c.pendingTimer = nil
+      c.firing = false
+      c.state = "idle"
+      RefreshCueButtonColor(idx)
+      LogCueFire(idx, false, "CANCELLED")
+    end
+  end
+end
+
 -- Rewinds playback POSITION (which cue is active/played, current/next
 -- pointers, status bar) without touching the authored show itself (cues,
 -- actions, devices, UDP targets are all untouched). Shared by Init/Import
 -- (silent) and the explicit Reset Show button (which also logs it).
 ResetPlaybackState = function()
+  CancelAllPendingWaits()
   for i = 1, MaxCues do
     Cues[i].state = "idle"
     RefreshCueButtonColor(i)
@@ -1423,32 +1491,13 @@ end
 --=============================================================================
 -- Cue firing
 --=============================================================================
-FireCueNow = function(i)
-  local now = os.clock()
-  if LastFireTime[i] and (now - LastFireTime[i]) * 1000 < DEBOUNCE_MS then
-    dbg("Debounced re-fire of cue %d", i)
-    return
-  end
-  LastFireTime[i] = now
-
+-- Finalizes a cue fire once every action (including anything after the last
+-- "wait") has been dispatched -- was FireCueNow's tail before actions could
+-- span real time.
+FinishCueFire = function(i, errors)
   local cue = Cues[i]
-  cue.state = "firing"
-  RefreshCueButtonColor(i)
-  pcall(function()
-    Controls.StatusStateText.String = "Firing"
-    Controls.StatusLed.Color = StateColors.firing
-  end)
-
-  local errors = {}
-  for a = 1, MaxActions do
-    local act = cue.actions[a]
-    if act.type ~= "none" then
-      local ok, err = DispatchAction(act)
-      if not ok then
-        table.insert(errors, string.format("Action %d (%s): %s", a, act.type, tostring(err)))
-      end
-    end
-  end
+  cue.firing = false
+  cue.pendingTimer = nil
 
   if #errors > 0 then
     -- A failed fire never becomes the new active cue -- the show stays
@@ -1474,6 +1523,59 @@ FireCueNow = function(i)
   RefreshCueButtonColor(i)
   UpdateStatus(i)
   LogCueFire(i, #errors == 0)
+end
+
+-- Dispatches a cue's actions IN ORDER starting at `startIndex`. A "wait"
+-- action pauses the sequence for its Value (seconds) via a cancellable
+-- Timer and resumes with the remaining actions once it fires -- everything
+-- before a wait has already happened by the time it's reached, and nothing
+-- after it happens until the delay elapses. Reaching the end (or a cue with
+-- no actions at all) finalizes the fire via FinishCueFire.
+DispatchCueActions = function(i, startIndex, errors)
+  local cue = Cues[i]
+  for a = startIndex, MaxActions do
+    local act = cue.actions[a]
+    if act.type == "wait" then
+      local seconds = tonumber(act.value) or 0
+      if seconds > 0 then
+        cue.pendingTimer = CallAfter(function()
+          DispatchCueActions(i, a + 1, errors)
+        end, seconds)
+        return -- resume later; do not fall through to FinishCueFire yet
+      end
+      -- seconds <= 0 (unset/invalid): treat as a no-op, continue immediately
+    elseif act.type ~= "none" then
+      local ok, err = DispatchAction(act)
+      if not ok then
+        table.insert(errors, string.format("Action %d (%s): %s", a, act.type, tostring(err)))
+      end
+    end
+  end
+  FinishCueFire(i, errors)
+end
+
+FireCueNow = function(i)
+  local now = os.clock()
+  if LastFireTime[i] and (now - LastFireTime[i]) * 1000 < DEBOUNCE_MS then
+    dbg("Debounced re-fire of cue %d", i)
+    return
+  end
+  local cue = Cues[i]
+  if cue.firing then
+    dbg("Cue %d is still running (a 'wait' is pending); ignoring re-fire", i)
+    return
+  end
+  LastFireTime[i] = now
+
+  cue.firing = true
+  cue.state = "firing"
+  RefreshCueButtonColor(i)
+  pcall(function()
+    Controls.StatusStateText.String = "Firing"
+    Controls.StatusLed.Color = StateColors.firing
+  end)
+
+  DispatchCueActions(i, 1, {})
 end
 
 OnCueButtonPressed = function(i)
@@ -1565,6 +1667,7 @@ end
 
 Controls.StopAllButton.EventHandler = function()
   local errs = StopAllPlayers()
+  CancelAllPendingWaits()
   if #errs > 0 then
     SetError("Stop-all errors: " .. table.concat(errs, " | "))
   else
@@ -1586,6 +1689,8 @@ Controls.PanicButton.EventHandler = function()
   -- Clears the active/played highlighting (visual stop) but deliberately
   -- does NOT touch Current/NextCueIndex -- PANIC is an emergency halt in
   -- place, not a rewind. Use Reset Show to actually restart the show.
+  -- Also stops any cue currently mid-"wait" so nothing queued fires late.
+  CancelAllPendingWaits()
   for i = 1, MaxCues do
     Cues[i].state = "idle"
     RefreshCueButtonColor(i)
@@ -1758,6 +1863,7 @@ for i = 1, MaxCues do
   Cues[i] = {
     name = "Cue " .. i, notes = "", color = "#465261", armed = false, confirm = false,
     state = "idle", activeActions = 0, actions = {},
+    firing = false, pendingTimer = nil, -- transient dispatch state, never persisted
     condition = { enabled = false, target = "", control = "", required = true },
   }
   for a = 1, MaxActions do
@@ -1822,6 +1928,16 @@ for a = 1, MaxActions do
     if c.activeActions > 0 then c.activeActions = c.activeActions - 1 end
     PushSelectedCueToEditor()
     MarkDirty(); SaveShowData()
+  end
+  Controls.ActionMoveUp[slotIdx].EventHandler = function()
+    if Loading then return end
+    if Controls.LockToggle.Boolean then return end
+    MoveActionUp(slotIdx)
+  end
+  Controls.ActionMoveDown[slotIdx].EventHandler = function()
+    if Loading then return end
+    if Controls.LockToggle.Boolean then return end
+    MoveActionDown(slotIdx)
   end
 end
 

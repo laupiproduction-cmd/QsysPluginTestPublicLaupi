@@ -1,10 +1,11 @@
 # Show Control ~ Cue Engine
 
 A single-file Q-SYS plugin (`ShowCueEngine.qplug`) that acts as a live-show
-cue engine: up to 30 operator-programmable cues, each firing multiple
-simultaneous actions — triggering Media/Stream Players, sending UDP messages
-to networked devices, and setting/triggering any Named Control on any
-in-house component.
+cue engine: up to 30 operator-programmable cues, each firing a numbered,
+reorderable sequence of actions — triggering Media/Stream Players, sending
+UDP messages to networked devices, setting/triggering any Named Control on
+any in-house component, and optionally pausing the rest of the sequence
+with a `wait` action.
 
 Written for Q-SYS Designer 9.x, Lua 5.3, using only documented Q-SYS Lua
 extensions (`UdpSocket`, `Component`, `Controls`, `Timer`, `rapidjson`,
@@ -99,8 +100,11 @@ On the **Show Editor** page:
    fired).
 3. Press **+ Add Action** to reveal an action row (up to **Max Actions Per
    Cue**); press a row's **X** to remove it (later rows shift down to fill
-   the gap). Each visible row has:
-   - **Type**: `none` / `player_trigger` / `udp_send` / `named_control_set`
+   the gap). Each row is numbered (its firing order) and has **^ / v** Move
+   Up/Down buttons — see "Ordered, movable actions" below. Each visible row
+   has:
+   - **Type**: `none` / `player_trigger` / `udp_send` / `named_control_set` /
+     `wait`
    - **Target**: a Device name (for `player_trigger` / `named_control_set`)
      or a UDP target name (for `udp_send`) — dropdown populated from the
      **Devices** page, not the raw design.
@@ -121,11 +125,40 @@ On the **Show Editor** page:
      determined (unresolved target, lookup failure, etc.) it falls back to
      the free-text field, `T` / empty for either meaning "just `:Trigger()`
      it". For `udp_send`, Value is always the free-text field — the **raw
-     ASCII payload** sent byte-for-byte (see "Assumptions").
+     ASCII payload** sent byte-for-byte (see "Assumptions"). For `wait`,
+     Value is the free-text field too — a plain number of **seconds**
+     (e.g. `2.5`); an empty or non-numeric value is treated as 0 (no delay).
 
 Switching **Select Cue** doesn't lose anything — every field writes straight
 into that cue's stored data as you edit it, and the editor bank just gets
 repointed to show whichever cue is currently selected.
+
+### Ordered, movable actions — and `wait`
+
+A cue's actions fire **in order** — row 1, then row 2, and so on; the
+numbered row position *is* the firing order, and export/import preserve it
+exactly. Use each row's **^** / **v** buttons to reorder without deleting
+and re-adding (both grey out at the ends: row 1 can't move up, the last row
+can't move down).
+
+Without any `wait` actions, a cue's rows still dispatch back-to-back as
+fast as Lua can loop through them — effectively simultaneous, same as
+before. The **`wait`** action type changes that on purpose: it pauses
+*everything after it* in that cue for its Value (seconds), while
+everything *before* it has already fired by the time it's reached. Put a
+`wait` between two actions to space them out — e.g. trigger a video, `wait`
+8 seconds for it to finish, then bring the house lights up.
+
+A cue with a pending `wait` shows the **Firing** (amber) color for its
+entire duration, not just a brief flash, and won't become the new **Active**
+cue (see below) until every action — including everything after the last
+`wait` — has actually dispatched. Firing the *same* cue again while its own
+`wait` is still pending is ignored (it's still mid-sequence); firing a
+*different* cue in the meantime works normally, since each cue's wait state
+is independent. **PANIC**, **STOP ALL**, and **RESET** all cancel any cue
+currently mid-`wait` — its queued remaining actions never fire, and it's
+logged as `CANCELLED` in the Activity Log — so a delayed action can never
+sneak out after you've told the show to stop or start over.
 
 ### Optional fire conditions
 
@@ -161,11 +194,12 @@ normal cue path — they're an emergency override by design.
 **GO** (Live Show page) fires the "next cue" shown in the status bar and
 advances it. **STOP ALL** triggers the control named in **Player Stop
 Control Name** (Show Editor page, default `stop`) on every component
-referenced anywhere in the show. **PANIC** does the same and, if **Panic
-UDP Payload** is non-empty, sends that payload to every configured UDP
-target — bypassing the normal cue path entirely, and clears the grid's
-active/played coloring (but does **not** rewind the show position — it's a
-halt-in-place, not a restart; use **RESET** for that).
+referenced anywhere in the show, and cancels any cue mid-`wait`. **PANIC**
+does the same and, if **Panic UDP Payload** is non-empty, sends that
+payload to every configured UDP target — bypassing the normal cue path
+entirely, and clears the grid's active/played coloring (but does **not**
+rewind the show position — it's a halt-in-place, not a restart; use
+**RESET** for that).
 
 ### One active cue, played cues greyed out
 
@@ -276,6 +310,13 @@ in emulation.
   action's value blank until touched, which made an untouched "off" toggle
   silently fall through to `:Trigger()` instead of actually setting
   `.Boolean = false` when the cue fired — fixed in `RefreshActionValueEditor`.
+- A cue's actions dispatch through a small state machine (`DispatchCueActions`
+  / `FinishCueFire`), not a single synchronous loop, so a `wait` can suspend
+  mid-cue without blocking anything else in the plugin (still no polling: the
+  suspension is a single scheduled `Timer`, cancelled via `:Stop()` rather
+  than left to fire into a stopped/reset show). Each cue tracks its own
+  in-flight state independently, so cue A being mid-`wait` never blocks or
+  interferes with firing cue B.
 
 ## Assumptions flagged for review
 
@@ -352,8 +393,18 @@ left untouched (never overwritten by the failed cue); Reset Show is
 checked to clear active/played/error coloring and the status bar back to
 their boot state while leaving a cue's own authored notes/content intact;
 and the notes views are checked to advance correctly across successive
-successful fires. The layout check also confirms every declared control
-appears on exactly one of the three pages (never more than one, never
-zero, except the intentionally-hidden `ShowData`). It has **not** been run
-inside actual Q-SYS Designer or against real hardware — do that before a
-live show, per the persistence note above.
+successful fires. Move Up/Down is checked to swap a row's full contents
+(not just its Type) and to grey out at both ends of the active row range.
+The mocked `Timer` was upgraded to actually schedule and (via a manual
+`AdvanceTimers()` the test calls explicitly, since no real time passes in
+the harness) fire deferred callbacks, so `wait` is checked end-to-end: the
+action before it fires immediately, the action after it is held until the
+delay elapses, the cue shows Firing color for the whole span and only
+becomes Active once the sequence completes; and PANIC mid-`wait` is
+checked to actually stop the pending Timer (not just look like it did) by
+advancing time afterward and confirming the queued action still never
+fires. The layout check also confirms every declared control appears on
+exactly one of the three pages (never more than one, never zero, except
+the intentionally-hidden `ShowData`). It has **not** been run inside
+actual Q-SYS Designer or against real hardware — do that before a live
+show, per the persistence note above.
