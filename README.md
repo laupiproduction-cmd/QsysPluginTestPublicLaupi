@@ -4,8 +4,10 @@ A single-file Q-SYS plugin (`ShowCueEngine.qplug`) that acts as a live-show
 cue engine: up to 30 operator-programmable cues, each firing a numbered,
 reorderable sequence of actions — triggering Media/Stream Players, sending
 UDP messages to networked devices, setting/triggering any Named Control on
-any in-house component, and optionally pausing the rest of the sequence
-with a `wait` action.
+any in-house component, optionally pausing the rest of the sequence with a
+`wait` action, and invoking freely-defined, reusable **Action Groups** (a
+"Mute All" or "Gain Reset" you build once and call from as many cues as
+you like).
 
 Written for Q-SYS Designer 9.x, Lua 5.3, using only documented Q-SYS Lua
 extensions (`UdpSocket`, `Component`, `Controls`, `Timer`, `rapidjson`,
@@ -21,7 +23,7 @@ extensions (`UdpSocket`, `Component`, `Controls`, `Timer`, `rapidjson`,
 2. Drag it onto the design canvas.
 3. Set its Properties (see below) to size the show, then wire up cues.
 
-The component has three pages (visible as tabs at the top of its
+The component has four pages (visible as tabs at the top of its
 properties/control panel in Designer):
 
 - **Live Show** — the compact operator view: show/lock strip, status bar,
@@ -30,9 +32,15 @@ properties/control panel in Designer):
   fit comfortably on one screen (~920px wide).
 - **Devices** — a curated list of Q-SYS components ("Devices") and UDP
   targets. This is the only place the full, raw list of every component in
-  your design is shown; everywhere else (the Show Editor's action Target
-  dropdown) only sees the friendly names you define here. Keeps the editor
-  from being flooded with every gain block and router in the design.
+  your design is shown; everywhere else (the Show Editor's/Action Groups'
+  action Target dropdown) only sees the friendly names you define here.
+  Keeps the editor from being flooded with every gain block and router in
+  the design.
+- **Action Groups** — pick **one** reusable group from a dropdown and edit
+  its actions (same Type/Target/Control/Value/Move Up/Down/Remove editor as
+  a cue's own actions, in its own bank of controls). Build a "Mute All" or
+  "Gain Reset" once here, then invoke it from any cue — or another group —
+  with a `group` action. See "Reusable Action Groups" below.
 - **Show Editor** — pick **one** cue from a dropdown and edit it: name,
   color, armed, confirm-before-fire, notes, and its actions. Actions are
   revealed one at a time with **+ Add Action** (and removed with each row's
@@ -41,7 +49,7 @@ properties/control panel in Designer):
   with 100+ mostly-empty rows.
 
 Paging is purely a Designer-canvas display choice — every control behaves
-identically regardless of which page it's shown on. All three pages share
+identically regardless of which page it's shown on. All four pages share
 one color palette (blue accent, green/amber/red for success/warning/danger)
 with card-style grouped sections and section headings.
 
@@ -50,8 +58,9 @@ with card-style grouped sections and section headings.
 | Property | Purpose | Default | Range |
 |---|---|---|---|
 | **Max Cues** | Size of the cue grid | 30 | 1–30 |
-| **Max Actions Per Cue** | Max actions any single cue can have | 4 | 1–25 |
+| **Max Actions Per Cue** | Max actions any single cue (or Action Group) can have | 4 | 1–25 |
 | **Max Devices** | Size of the curated component list (Devices page) | 12 | 0–24 |
+| **Max Action Groups** | Number of reusable Action Groups | 8 | 0–24 |
 | **UDP Targets** | Number of configurable UDP devices | 6 | 0–12 |
 | **Show Debug** | Show the Lua debug window; also gates `print()` mirroring of errors/cue-fire log lines | false | — |
 
@@ -104,10 +113,11 @@ On the **Show Editor** page:
    Up/Down buttons — see "Ordered, movable actions" below. Each visible row
    has:
    - **Type**: `none` / `player_trigger` / `udp_send` / `named_control_set` /
-     `wait`
-   - **Target**: a Device name (for `player_trigger` / `named_control_set`)
-     or a UDP target name (for `udp_send`) — dropdown populated from the
-     **Devices** page, not the raw design.
+     `wait` / `group`
+   - **Target**: a Device name (for `player_trigger` / `named_control_set`),
+     a UDP target name (for `udp_send`), or an Action Group name (for
+     `group`) — dropdown populated from the **Devices** page or the
+     **Action Groups** page respectively, never the raw design.
    - **Control**: the Named Control on that device to act on
      (`player_trigger` / `named_control_set` only). Auto-suggested from the
      live component's own controls via `Component.GetControls()`; always
@@ -159,6 +169,32 @@ is independent. **PANIC**, **STOP ALL**, and **RESET** all cancel any cue
 currently mid-`wait` — its queued remaining actions never fire, and it's
 logged as `CANCELLED` in the Activity Log — so a delayed action can never
 sneak out after you've told the show to stop or start over.
+
+### Reusable Action Groups
+
+For anything you find yourself repeating across cues — a "Gain Reset", a
+"Mute All", a standard house-lights-down sequence — build it **once** on
+the **Action Groups** page and invoke it from any cue with a `group`
+action (Target = the group's name). A group is edited with the exact same
+Type/Target/Control/Value/Move Up/Down/Remove tools as a cue's own actions
+(including `wait`), just in its own bank of controls, so editing a group
+never touches or shares controls with any cue.
+
+Groups are freely reusable — the same group can be called from as many
+cues as you like, and calling it doesn't "use it up" or affect other cues
+using it. Groups can even call **other** groups (a "Full Reset" group that
+itself invokes "Gain Reset" and "Mute All"), which is expanded recursively
+in firing order right where the `group` action sits — including any
+`wait`s inside the nested group.
+
+The one thing this can't do safely is reference itself, directly or
+indirectly (group A calling group A, or A calling B calling A) — that's
+caught at fire time (not import/save time, since the cycle only matters
+once something actually tries to run it) and reported as a specific
+"circular action group reference" error on the cue that triggered it,
+rather than hanging or crashing. A `group` action naming a group that
+doesn't exist (typo, or the group was renamed) fails the same clear way —
+"action group not found" — without touching anything else in the cue.
 
 ### Optional fire conditions
 
@@ -279,9 +315,10 @@ in emulation.
 
 ## Export / Import
 
-- **Export** serializes the current show (cues, devices, UDP targets) to
-  the read-only **Export JSON** box for manual copy (no filesystem access
-  is available in the plugin sandbox, so this is copy/paste only).
+- **Export** serializes the current show (cues, devices, Action Groups,
+  UDP targets) to the read-only **Export JSON** box for manual copy (no
+  filesystem access is available in the plugin sandbox, so this is
+  copy/paste only).
 - **Import**: paste JSON into **Import JSON** and press **Import**. The
   payload is fully validated (cue/action/device counts within the
   configured limits, valid action types, valid IP/port formats) *before*
@@ -317,6 +354,13 @@ in emulation.
   than left to fire into a stopped/reset show). Each cue tracks its own
   in-flight state independently, so cue A being mid-`wait` never blocks or
   interferes with firing cue B.
+- `group` actions are resolved by fully expanding them (recursively, for
+  nested groups) into a flat, ordered action list *before* anything
+  dispatches (`BuildExpandedActionList`) — so the existing per-action
+  `pcall` isolation, `wait` handling, and error reporting all apply to a
+  group's actions exactly as they do to a cue's own, with no separate code
+  path to keep in sync. A hard recursion-depth cap backstops the explicit
+  circular-reference guard.
 
 ## Assumptions flagged for review
 
@@ -403,8 +447,14 @@ delay elapses, the cue shows Firing color for the whole span and only
 becomes Active once the sequence completes; and PANIC mid-`wait` is
 checked to actually stop the pending Timer (not just look like it did) by
 advancing time afterward and confirming the queued action still never
-fires. The layout check also confirms every declared control appears on
-exactly one of the three pages (never more than one, never zero, except
-the intentionally-hidden `ShowData`). It has **not** been run inside
-actual Q-SYS Designer or against real hardware — do that before a live
-show, per the persistence note above.
+fires. Action Groups are checked end-to-end too: a single group invoked
+from two different cues actually runs its action both times; a `wait`
+nested inside a group correctly delays the rest of that group when it's
+invoked from a cue; a self-referencing group and a group naming a
+nonexistent group both fail the triggering cue with a specific error
+instead of hanging, looping, or crashing; and groups round-trip through
+export/import. The layout check also confirms every declared control
+appears on exactly one of the four pages (never more than one, never
+zero, except the intentionally-hidden `ShowData`). It has **not** been
+run inside actual Q-SYS Designer or against real hardware — do that
+before a live show, per the persistence note above.

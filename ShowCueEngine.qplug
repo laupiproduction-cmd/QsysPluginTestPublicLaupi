@@ -15,17 +15,26 @@
                              fired by the time it's reached; with no wait
                              actions, a cue's actions still dispatch back to
                              back as fast as Lua can loop through them.
+    - group                 : invoke a freely-named, reusable bundle of
+                             actions defined on the Action Groups page (its
+                             Target is the group's name) -- expanded inline,
+                             recursively (a group may invoke other groups),
+                             with a circular-reference guard at fire time.
 
-  Three pages:
-    - Live Show   : status bar, transport, quick-fire cue grid, activity log
-    - Devices     : curated list of Q-SYS components ("Devices") and UDP
-                    targets -- the ONLY things offered in the Show Editor's
-                    action Target dropdowns (instead of every component in
-                    the whole design)
-    - Show Editor : pick one cue from a dropdown and edit it -- name/notes/
-                    color/armed/confirm plus its actions, added one at a
-                    time via "+ Add Action" -- rather than showing all
-                    cues x actions on screen at once
+  Four pages:
+    - Live Show    : status bar, transport, quick-fire cue grid, activity log
+    - Devices      : curated list of Q-SYS components ("Devices") and UDP
+                     targets -- the ONLY things offered in the Show Editor's/
+                     Action Groups' action Target dropdowns (instead of
+                     every component in the whole design)
+    - Action Groups: pick one reusable group from a dropdown and edit its
+                     actions -- same editor as a cue's own actions, in its
+                     own bank of controls, invoked from any cue (or another
+                     group) via a "group" action
+    - Show Editor  : pick one cue from a dropdown and edit it -- name/notes/
+                     color/armed/confirm plus its actions, added one at a
+                     time via "+ Add Action" -- rather than showing all
+                     cues x actions on screen at once
 
   Only documented Q-SYS Lua extensions are used: UdpSocket, Component,
   Controls, Timer, rapidjson, Ping. See README.md for install/config notes
@@ -34,9 +43,9 @@
 
 PluginInfo = {
   Name = "Show Control~CueEngine",
-  Version = "1.2.0",
+  Version = "1.3.0",
   Id = "com.yourcompany.showcontrol.cueengine",
-  Description = "Live-show cue engine: up to 30 cues, each firing a reorderable, optionally-delayed sequence of actions (player triggers, UDP, named controls, wait).",
+  Description = "Live-show cue engine: up to 30 cues, each firing a reorderable, optionally-delayed sequence of actions (player triggers, UDP, named controls, wait, reusable action groups).",
   ShowDebug = true,
 }
 
@@ -46,6 +55,7 @@ local HARD_MAX_CUES = 30
 local HARD_MAX_ACTIONS = 25
 local HARD_MAX_DEVICES = 24
 local HARD_MAX_UDP = 12
+local HARD_MAX_ACTION_GROUPS = 24
 
 --=============================================================================
 -- Design time: Properties
@@ -72,6 +82,13 @@ function GetProperties()
     Min = 0,
     Max = HARD_MAX_DEVICES,
     Value = 12,
+  })
+  table.insert(props, {
+    Name = "Max Action Groups",
+    Type = "integer",
+    Min = 0,
+    Max = HARD_MAX_ACTION_GROUPS,
+    Value = 8,
   })
   table.insert(props, {
     Name = "UDP Targets",
@@ -101,6 +118,7 @@ function GetControls(props)
   local maxCues = props["Max Cues"].Value
   local maxActions = props["Max Actions Per Cue"].Value
   local maxDevices = props["Max Devices"].Value
+  local maxActionGroups = props["Max Action Groups"].Value
   local numUdp = props["UDP Targets"].Value
 
   local ctrls = {}
@@ -190,13 +208,32 @@ function GetControls(props)
   add({ Name = "ActionMoveDown", ControlType = "Button", ButtonType = "Trigger", Count = maxActions })
   add({ Name = "ActionRemove", ControlType = "Button", ButtonType = "Trigger", Count = maxActions })
 
+  -- Action Groups: reusable, freely-named bundles of actions (e.g. "Gain
+  -- Reset", "Mute All") that a cue can invoke via a "group" action. Same
+  -- select-one-and-edit-its-actions pattern as cues, with its own (smaller)
+  -- action-editor bank so it never shares controls with the cue editor.
+  if maxActionGroups > 0 then
+    add({ Name = "SelectedGroup", ControlType = "Text", Count = 1 })
+    add({ Name = "GroupEditName", ControlType = "Text", Count = 1 })
+    add({ Name = "AddGroupActionButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
+
+    add({ Name = "GroupActionType", ControlType = "Text", Count = maxActions })
+    add({ Name = "GroupActionTarget", ControlType = "Text", Count = maxActions })
+    add({ Name = "GroupActionControl", ControlType = "Text", Count = maxActions })
+    add({ Name = "GroupActionValue", ControlType = "Text", Count = maxActions })
+    add({ Name = "GroupActionValueBool", ControlType = "Button", ButtonType = "Toggle", Count = maxActions })
+    add({ Name = "GroupActionMoveUp", ControlType = "Button", ButtonType = "Trigger", Count = maxActions })
+    add({ Name = "GroupActionMoveDown", ControlType = "Button", ButtonType = "Trigger", Count = maxActions })
+    add({ Name = "GroupActionRemove", ControlType = "Button", ButtonType = "Trigger", Count = maxActions })
+  end
+
   return ctrls
 end
 
 --=============================================================================
 -- Design time: Pages, icon color/name, and Layout
 --=============================================================================
-local PageNames = { "Live Show", "Devices", "Show Editor" }
+local PageNames = { "Live Show", "Devices", "Action Groups", "Show Editor" }
 
 function GetPages(props)
   local pages = {}
@@ -218,6 +255,7 @@ function GetControlLayout(props)
   local maxCues = props["Max Cues"].Value
   local maxActions = props["Max Actions Per Cue"].Value
   local maxDevices = props["Max Devices"].Value
+  local maxActionGroups = props["Max Action Groups"].Value
   local numUdp = props["UDP Targets"].Value
   local currentPage = PageNames[props["page_index"].Value]
 
@@ -380,6 +418,62 @@ function GetControlLayout(props)
 
     pageBackground(W, y)
 
+  elseif currentPage == "Action Groups" then
+    ------------------------------------------------------------------------
+    -- Page 3: reusable, freely-named bundles of actions (e.g. "Gain Reset",
+    -- "Mute All") that any cue can invoke via a "group" action (Target =
+    -- the group's name here). Same select-one-and-edit pattern as the Show
+    -- Editor's cues, with its own action-editor bank -- editing a group
+    -- never touches or shares controls with any cue's own actions.
+    ------------------------------------------------------------------------
+    local W = 920
+    local M = 16
+
+    title("SHOW CUE ENGINE  ~  Action Groups", M, 6, 600)
+    local y = 30
+    graphics[#graphics + 1] = {
+      Type = "Text",
+      Text = "Define a reusable bundle of actions here, then invoke it from any cue with a 'group' action (Target = the group's name below). Groups can reference other groups too (circular references are rejected at fire time).",
+      FontSize = 9, Position = { M, y }, Size = { W - 2 * M, 16 },
+    }
+    y = y + 20
+
+    if maxActionGroups > 0 then
+      local rowH = 24
+      local editorH = 104 + maxActions * rowH
+      card(M, y, W - 2 * M, editorH, "GROUP EDITOR")
+      layout["SelectedGroup"] = { PrettyName = "Select Group", Style = "ComboBox", Position = { 28, y + 18 }, Size = { 240, 20 } }
+      layout["GroupEditName"] = { PrettyName = "Rename Group", Style = "Text", Position = { 280, y + 18 }, Size = { W - 2 * M - 280 - 14, 20 } }
+
+      graphics[#graphics + 1] = { Type = "Text", Text = "#", FontSize = 8, Position = { 28, y + 46 }, Size = { 20, 12 } }
+      graphics[#graphics + 1] = { Type = "Text", Text = "Type", FontSize = 8, Position = { 52, y + 46 }, Size = { 98, 12 } }
+      graphics[#graphics + 1] = { Type = "Text", Text = "Target (device / UDP target / group)", FontSize = 8, Position = { 154, y + 46 }, Size = { 148, 12 } }
+      graphics[#graphics + 1] = { Type = "Text", Text = "Control", FontSize = 8, Position = { 306, y + 46 }, Size = { 128, 12 } }
+      graphics[#graphics + 1] = { Type = "Text", Text = "Value (toggle if Boolean; wait = seconds)", FontSize = 8, Position = { 438, y + 46 }, Size = { 140, 12 } }
+
+      local rowsY = y + 60
+      for a = 1, maxActions do
+        local ry = rowsY + (a - 1) * rowH
+        graphics[#graphics + 1] = { Type = "Text", Text = tostring(a) .. ".", FontSize = 9, HTextAlign = "Right", Position = { 28, ry }, Size = { 20, 20 } }
+        layout[key("GroupActionType", maxActions, a)] = { PrettyName = string.format("Group Action %d~Type", a), Style = "ComboBox", Position = { 52, ry }, Size = { 98, 20 } }
+        layout[key("GroupActionTarget", maxActions, a)] = { PrettyName = string.format("Group Action %d~Target", a), Style = "ComboBox", Position = { 154, ry }, Size = { 148, 20 } }
+        layout[key("GroupActionControl", maxActions, a)] = { PrettyName = string.format("Group Action %d~Control", a), Style = "ComboBox", Position = { 306, ry }, Size = { 128, 20 } }
+        layout[key("GroupActionValue", maxActions, a)] = { PrettyName = string.format("Group Action %d~Value", a), Style = "Text", Position = { 438, ry }, Size = { 140, 20 } }
+        layout[key("GroupActionValueBool", maxActions, a)] = { PrettyName = string.format("Group Action %d~Value (Boolean)", a), Style = "Button", ButtonStyle = "Toggle", Legend = "FALSE", Color = Success, OffColor = { 150, 155, 162 }, CornerRadius = 4, Position = { 438, ry }, Size = { 140, 20 } }
+        layout[key("GroupActionMoveUp", maxActions, a)] = { PrettyName = string.format("Group Action %d~Move Up", a), Style = "Button", ButtonStyle = "Trigger", Legend = "^", CornerRadius = 4, Position = { 582, ry }, Size = { 26, 20 } }
+        layout[key("GroupActionMoveDown", maxActions, a)] = { PrettyName = string.format("Group Action %d~Move Down", a), Style = "Button", ButtonStyle = "Trigger", Legend = "v", CornerRadius = 4, Position = { 610, ry }, Size = { 26, 20 } }
+        layout[key("GroupActionRemove", maxActions, a)] = { PrettyName = string.format("Group Action %d~Remove", a), Style = "Button", ButtonStyle = "Trigger", Legend = "X", Color = Danger, CornerRadius = 4, Position = { 640, ry }, Size = { 26, 20 } }
+      end
+      layout["AddGroupActionButton"] = { PrettyName = "Add Action to Group", Style = "Button", ButtonStyle = "Trigger", Legend = "+ Add Action", Color = Accent, CornerRadius = 4, Position = { 28, rowsY + maxActions * rowH + 8 }, Size = { 130, 22 } }
+
+      y = y + editorH + M
+    else
+      graphics[#graphics + 1] = { Type = "Text", Text = "No action group slots configured (set the 'Max Action Groups' Property to add some).", FontSize = 9, Position = { M, y }, Size = { 500, 16 } }
+      y = y + 40 + M
+    end
+
+    pageBackground(W, y)
+
   elseif currentPage == "Show Editor" then
     ------------------------------------------------------------------------
     -- Page 3: pick a cue from a dropdown, edit only that cue. Actions are
@@ -493,10 +587,11 @@ local rapidjson = require("rapidjson")
 local MaxCues = Properties["Max Cues"].Value
 local MaxActions = Properties["Max Actions Per Cue"].Value
 local MaxDevices = Properties["Max Devices"].Value
+local MaxActionGroups = Properties["Max Action Groups"].Value
 local NumUdp = Properties["UDP Targets"].Value
 local DebugOn = Properties["Show Debug"].Value
 
-local ActionTypes = { "none", "player_trigger", "udp_send", "named_control_set", "wait" }
+local ActionTypes = { "none", "player_trigger", "udp_send", "named_control_set", "wait", "group" }
 local ActionTypeSet = {}
 for _, t in ipairs(ActionTypes) do ActionTypeSet[t] = true end
 
@@ -508,7 +603,7 @@ local StateColors = {
   ready = "#18A05A",
   neutral = "#6E7680",
   active = "#18A05A", -- the one cue currently "live" (persists until another cue fires)
-  played = "#5A5F66", -- a previously-active cue, greyed out once superseded
+  played = "#26282D", -- a previously-active cue, dimmed well below idle (#465261) so it reads as "done"
 }
 
 -- ----------------------------------------------------------------------------
@@ -526,8 +621,12 @@ local DoPlayerTrigger, DoNamedControlSet, DoUdpSend, DispatchAction, ParseValueS
 local FindUdpTargetByName, OpenUdpSocket
 local SetStatusMessage, SetError, UpdateStatus, LogCueFire
 local FireCueNow, OnCueButtonPressed, StopAllPlayers, StartPingHeartbeat, CallAfter
-local DispatchCueActions, FinishCueFire, CancelAllPendingWaits
+local DispatchCueActions, FinishCueFire, CancelAllPendingWaits, BuildExpandedActionList
 local MoveActionUp, MoveActionDown
+local FindActionGroupByName, ActionGroupNameList, SelectGroup, PushSelectedGroupToEditor
+local RefreshSelectedGroupChoices, RefreshGroupActionRowVisibility
+local GroupRefreshActionTargetChoices, GroupRefreshActionControlChoices, GroupRefreshActionValueEditor
+local GroupMoveActionUp, GroupMoveActionDown
 local EvaluateCondition, CheckCueConditions, PopulateConditionControlChoices
 local RefreshConditionEditorVisibility, RefreshGlobalConditionVisibility, PushGlobalConditionToControls
 local RefreshCueNotesDisplays, ResetPlaybackState, ResetShow
@@ -538,6 +637,8 @@ local Init
 -- ----------------------------------------------------------------------------
 local Cues = {}          -- 1..MaxCues -> { name, notes, color, armed, confirm, state, activeActions, actions = {1..MaxActions}, condition }
 local Devices = {}       -- 1..MaxDevices -> { name, component } (friendly name -> real Q-SYS component name)
+local ActionGroups = {}  -- 1..MaxActionGroups -> { name, activeActions, actions = {1..MaxActions} } (same shape as a cue's own actions)
+local SelectedGroupIndex = 1
 -- Optional fire conditions: { enabled, target = <device name>, control = <control name>, required = <bool> }.
 -- A cue only fires if ALL enabled conditions (Global, then its own) currently
 -- read as `required`. Disabled (enabled=false) conditions are always satisfied.
@@ -634,15 +735,17 @@ end
 
 RebuildComponentCache = function()
   local seen = {}
-  for i = 1, MaxCues do
-    for a = 1, MaxActions do
-      local act = Cues[i].actions[a]
+  local function scan(actions, count)
+    for a = 1, count do
+      local act = actions[a]
       if act.type == "player_trigger" or act.type == "named_control_set" then
         local compName = ResolveDeviceComponent(act.target)
         if compName and compName ~= "" then seen[compName] = true end
       end
     end
   end
+  for i = 1, MaxCues do scan(Cues[i].actions, MaxActions) end
+  for i = 1, MaxActionGroups do scan(ActionGroups[i].actions, MaxActions) end
   for name, _ in pairs(seen) do
     GetComponent(name)
   end
@@ -677,6 +780,21 @@ UdpTargetNameList = function()
   return names
 end
 
+FindActionGroupByName = function(name)
+  for i = 1, MaxActionGroups do
+    if ActionGroups[i].name == name then return ActionGroups[i] end
+  end
+  return nil
+end
+
+ActionGroupNameList = function()
+  local names = {}
+  for i = 1, MaxActionGroups do
+    if ActionGroups[i].name ~= "" then table.insert(names, ActionGroups[i].name) end
+  end
+  return names
+end
+
 RefreshActionTargetChoices = function(a)
   local t = Cues[SelectedCueIndex].actions[a].type
   pcall(function()
@@ -684,6 +802,8 @@ RefreshActionTargetChoices = function(a)
       Controls.ActionTarget[a].Choices = UdpTargetNameList()
     elseif t == "player_trigger" or t == "named_control_set" then
       Controls.ActionTarget[a].Choices = DeviceNameList()
+    elseif t == "group" then
+      Controls.ActionTarget[a].Choices = ActionGroupNameList()
     else
       Controls.ActionTarget[a].Choices = {}
     end
@@ -779,6 +899,89 @@ RefreshActionValueEditor = function(a)
       -- happened to interact with the toggle first. Normalizing here makes
       -- the displayed default state authoritative immediately, with no
       -- toggle interaction required.
+      local normalized = boolVal and "B:true" or "B:false"
+      if act.value ~= normalized then
+        act.value = normalized
+        if not Loading then MarkDirty(); SaveShowData() end
+      end
+    end
+  end)
+end
+
+--=============================================================================
+-- Action Groups editor: exact mirror of the RefreshAction*/Cue action-editor
+-- functions above, but bound to the currently SELECTED GROUP and its own
+-- GroupAction* controls instead of a cue -- kept as separate functions
+-- (rather than parameterizing the cue versions) so editing a group can
+-- never accidentally touch cue state or vice versa.
+--=============================================================================
+GroupRefreshActionTargetChoices = function(a)
+  local t = ActionGroups[SelectedGroupIndex].actions[a].type
+  pcall(function()
+    if t == "udp_send" then
+      Controls.GroupActionTarget[a].Choices = UdpTargetNameList()
+    elseif t == "player_trigger" or t == "named_control_set" then
+      Controls.GroupActionTarget[a].Choices = DeviceNameList()
+    elseif t == "group" then
+      -- A group can invoke another group (composability) -- excluding
+      -- itself from the list here is just a UX nicety; the real circular-
+      -- reference guard lives in BuildExpandedActionList at fire time,
+      -- since indirect cycles (A -> B -> A) can't be caught this way.
+      local names = {}
+      for _, n in ipairs(ActionGroupNameList()) do
+        if n ~= ActionGroups[SelectedGroupIndex].name then table.insert(names, n) end
+      end
+      Controls.GroupActionTarget[a].Choices = names
+    else
+      Controls.GroupActionTarget[a].Choices = {}
+    end
+  end)
+end
+
+GroupRefreshActionControlChoices = function(a)
+  local act = ActionGroups[SelectedGroupIndex].actions[a]
+  if act.type ~= "player_trigger" and act.type ~= "named_control_set" then return end
+  local compName = ResolveDeviceComponent(act.target)
+  if not compName or compName == "" then return end
+  local comp = GetComponent(compName)
+  if not comp then return end
+  pcall(function()
+    local names = {}
+    for _, ctrl in ipairs(Component.GetControls(comp)) do
+      if ctrl.Name then table.insert(names, ctrl.Name) end
+    end
+    table.sort(names)
+    Controls.GroupActionControl[a].Choices = names
+  end)
+end
+
+GroupRefreshActionValueEditor = function(a)
+  local act = ActionGroups[SelectedGroupIndex].actions[a]
+  local showText, showBool = false, false
+  if act.type == "udp_send" or act.type == "wait" then
+    showText = true
+  elseif act.type == "named_control_set" then
+    local compName = ResolveDeviceComponent(act.target)
+    local desc = nil
+    if compName and compName ~= "" and act.control ~= "" then
+      desc = FindControlDescriptor(compName, act.control)
+    end
+    if desc and desc.Type == "Boolean" then
+      showBool = true
+    elseif desc and desc.Type == "Trigger" then
+      showText, showBool = false, false
+    else
+      showText = true
+    end
+  end
+  pcall(function()
+    Controls.GroupActionValue[a].IsInvisible = not showText
+    Controls.GroupActionValueBool[a].IsInvisible = not showBool
+    if showBool then
+      local mode, data = ParseValueSpec(act.value)
+      local boolVal = (mode == "boolean" and data) or false
+      Controls.GroupActionValueBool[a].Boolean = boolVal
+      Controls.GroupActionValueBool[a].Legend = boolVal and "TRUE" or "FALSE"
       local normalized = boolVal and "B:true" or "B:false"
       if act.value ~= normalized then
         act.value = normalized
@@ -905,6 +1108,16 @@ BuildShowTable = function()
   for i = 1, MaxDevices do
     table.insert(devicesOut, { name = Devices[i].name, component = Devices[i].component })
   end
+  local actionGroupsOut = {}
+  for i = 1, MaxActionGroups do
+    local g = ActionGroups[i]
+    local groupActionsOut = {}
+    for a = 1, MaxActions do
+      local act = g.actions[a]
+      table.insert(groupActionsOut, { type = act.type, target = act.target, control = act.control, value = act.value })
+    end
+    table.insert(actionGroupsOut, { name = g.name, activeActions = g.activeActions, actions = groupActionsOut })
+  end
   local udpOut = {}
   for i = 1, NumUdp do
     table.insert(udpOut, { name = UdpTargets[i].name, ip = UdpTargets[i].ip, port = UdpTargets[i].port })
@@ -914,6 +1127,7 @@ BuildShowTable = function()
     lastModified = os.date("%Y-%m-%d %H:%M:%S"),
     cues = cuesOut,
     devices = devicesOut,
+    actionGroups = actionGroupsOut,
     udpTargets = udpOut,
     globalCondition = { enabled = GlobalCondition.enabled, target = GlobalCondition.target, control = GlobalCondition.control, required = GlobalCondition.required },
   }
@@ -993,6 +1207,36 @@ ApplyShowTable = function(data)
       end)
     end
   end
+  if type(data.actionGroups) == "table" then
+    for i = 1, MaxActionGroups do
+      local src = data.actionGroups[i]
+      local g = ActionGroups[i]
+      if src then
+        g.name = tostring(src.name or g.name)
+        local highestUsed = 0
+        for a = 1, MaxActions do
+          local srcAct = src.actions and src.actions[a]
+          if srcAct then
+            g.actions[a] = {
+              type = ClampActionType(tostring(srcAct.type or "none")),
+              target = tostring(srcAct.target or ""),
+              control = tostring(srcAct.control or ""),
+              value = tostring(srcAct.value or ""),
+            }
+          else
+            g.actions[a] = { type = "none", target = "", control = "", value = "" }
+          end
+          if g.actions[a].type ~= "none" then highestUsed = a end
+        end
+        local gaa = tonumber(src.activeActions)
+        if gaa and gaa >= 0 and gaa <= MaxActions then
+          g.activeActions = math.floor(gaa)
+        else
+          g.activeActions = highestUsed
+        end
+      end
+    end
+  end
   if type(data.udpTargets) == "table" then
     for i = 1, NumUdp do
       local src = data.udpTargets[i]
@@ -1026,6 +1270,9 @@ ApplyShowTable = function(data)
   RefreshSelectedCueChoices()
   SelectedCueIndex = 1
   PushSelectedCueToEditor()
+  RefreshSelectedGroupChoices()
+  SelectedGroupIndex = 1
+  PushSelectedGroupToEditor()
   Loading = wasLoading
 end
 
@@ -1086,6 +1333,33 @@ ValidateShowTable = function(data)
     end
     for i, d in ipairs(data.devices) do
       if type(d) ~= "table" then return false, string.format("Device %d is not an object", i) end
+    end
+  end
+  if data.actionGroups ~= nil then
+    if type(data.actionGroups) ~= "table" then return false, "'actionGroups' must be an array" end
+    if #data.actionGroups > MaxActionGroups then
+      return false, string.format("Too many action groups: %d (max %d)", #data.actionGroups, MaxActionGroups)
+    end
+    for i, g in ipairs(data.actionGroups) do
+      if type(g) ~= "table" then return false, string.format("Action group %d is not an object", i) end
+      if g.activeActions ~= nil then
+        local gaa = tonumber(g.activeActions)
+        if not gaa or gaa < 0 or gaa > MaxActions then
+          return false, string.format("Action group %d has invalid activeActions: %s", i, tostring(g.activeActions))
+        end
+      end
+      if g.actions ~= nil then
+        if type(g.actions) ~= "table" then return false, string.format("Action group %d 'actions' must be an array", i) end
+        if #g.actions > MaxActions then
+          return false, string.format("Action group %d has too many actions: %d (max %d)", i, #g.actions, MaxActions)
+        end
+        for j, act in ipairs(g.actions) do
+          if type(act) ~= "table" then return false, string.format("Action group %d action %d is not an object", i, j) end
+          if act.type ~= nil and not ActionTypeSet[act.type] then
+            return false, string.format("Action group %d action %d has invalid type: %s", i, j, tostring(act.type))
+          end
+        end
+      end
     end
   end
   if data.udpTargets ~= nil then
@@ -1220,6 +1494,100 @@ SelectCue = function(i)
   local wasLoading = Loading
   Loading = true
   PushSelectedCueToEditor()
+  Loading = wasLoading
+end
+
+--=============================================================================
+-- Action Groups: select-one-and-edit, exact mirror of the cue editor
+-- functions above. Every one of these guards on MaxActionGroups <= 0 and
+-- returns immediately, since GetControls only declares the Group* controls
+-- when Max Action Groups > 0 -- with it at 0, Controls.SelectedGroup etc.
+-- simply don't exist, and this file's usual pcall-per-control-access
+-- pattern isn't enough by itself to protect a bare `Controls.X[i]` index
+-- done outside a pcall (e.g. in the EventHandler-wiring loops below).
+--=============================================================================
+RefreshSelectedGroupChoices = function()
+  if MaxActionGroups <= 0 then return end
+  local list = {}
+  for i = 1, MaxActionGroups do table.insert(list, string.format("%d: %s", i, ActionGroups[i].name)) end
+  pcall(function() Controls.SelectedGroup.Choices = list end)
+end
+
+RefreshGroupActionRowVisibility = function()
+  if MaxActionGroups <= 0 then return end
+  local g = ActionGroups[SelectedGroupIndex]
+  for a = 1, MaxActions do
+    local visible = a <= g.activeActions
+    pcall(function()
+      Controls.GroupActionType[a].IsInvisible = not visible
+      Controls.GroupActionTarget[a].IsInvisible = not visible
+      Controls.GroupActionControl[a].IsInvisible = not visible
+      Controls.GroupActionMoveUp[a].IsInvisible = not visible
+      Controls.GroupActionMoveDown[a].IsInvisible = not visible
+      Controls.GroupActionRemove[a].IsInvisible = not visible
+    end)
+    if visible then
+      GroupRefreshActionValueEditor(a)
+      pcall(function()
+        Controls.GroupActionMoveUp[a].IsDisabled = (a <= 1)
+        Controls.GroupActionMoveDown[a].IsDisabled = (a >= g.activeActions)
+      end)
+    else
+      pcall(function()
+        Controls.GroupActionValue[a].IsInvisible = true
+        Controls.GroupActionValueBool[a].IsInvisible = true
+      end)
+    end
+  end
+  pcall(function() Controls.AddGroupActionButton.IsDisabled = (g.activeActions >= MaxActions) end)
+end
+
+GroupMoveActionUp = function(a)
+  if MaxActionGroups <= 0 or a <= 1 then return end
+  local acts = ActionGroups[SelectedGroupIndex].actions
+  acts[a], acts[a - 1] = acts[a - 1], acts[a]
+  PushSelectedGroupToEditor()
+  MarkDirty(); SaveShowData()
+end
+
+GroupMoveActionDown = function(a)
+  if MaxActionGroups <= 0 then return end
+  local g = ActionGroups[SelectedGroupIndex]
+  if a >= g.activeActions then return end
+  local acts = g.actions
+  acts[a], acts[a + 1] = acts[a + 1], acts[a]
+  PushSelectedGroupToEditor()
+  MarkDirty(); SaveShowData()
+end
+
+PushSelectedGroupToEditor = function()
+  if MaxActionGroups <= 0 then return end
+  local g = ActionGroups[SelectedGroupIndex]
+  pcall(function()
+    Controls.SelectedGroup.String = string.format("%d: %s", SelectedGroupIndex, g.name)
+    Controls.GroupEditName.String = g.name
+  end)
+  for a = 1, MaxActions do
+    local act = g.actions[a]
+    pcall(function()
+      Controls.GroupActionType[a].String = act.type
+      Controls.GroupActionTarget[a].String = act.target
+      Controls.GroupActionControl[a].String = act.control
+      Controls.GroupActionValue[a].String = act.value
+    end)
+    GroupRefreshActionTargetChoices(a)
+    GroupRefreshActionControlChoices(a)
+  end
+  RefreshGroupActionRowVisibility()
+end
+
+SelectGroup = function(i)
+  if MaxActionGroups <= 0 then return end
+  if i < 1 or i > MaxActionGroups then return end
+  SelectedGroupIndex = i
+  local wasLoading = Loading
+  Loading = true
+  PushSelectedGroupToEditor()
   Loading = wasLoading
 end
 
@@ -1525,29 +1893,69 @@ FinishCueFire = function(i, errors)
   LogCueFire(i, #errors == 0)
 end
 
--- Dispatches a cue's actions IN ORDER starting at `startIndex`. A "wait"
--- action pauses the sequence for its Value (seconds) via a cancellable
--- Timer and resumes with the remaining actions once it fires -- everything
--- before a wait has already happened by the time it's reached, and nothing
--- after it happens until the delay elapses. Reaching the end (or a cue with
--- no actions at all) finalizes the fire via FinishCueFire.
-DispatchCueActions = function(i, startIndex, errors)
-  local cue = Cues[i]
-  for a = startIndex, MaxActions do
-    local act = cue.actions[a]
+-- Expands a flat actions array (a cue's own, or a group's) into a single
+-- ordered list, inlining any "group" actions' own actions recursively --
+-- right where the group action sat, in order -- so a group can itself
+-- contain "wait" actions or reference further groups. `visitedGroups`
+-- guards against a group directly or indirectly (A -> B -> A) referencing
+-- itself; `depth` is a hard recursion backstop. Each expanded entry keeps
+-- a human-readable sourceLabel for error messages, since a flat position
+-- no longer maps 1:1 to the original cue's own action slots once groups
+-- have been inlined. Reused for both a cue's top-level actions and every
+-- nested group's own actions -- same function, just fed a different array.
+BuildExpandedActionList = function(actions, count, labelPrefix, visitedGroups, depth)
+  local expanded = {}
+  if depth > 8 then
+    table.insert(expanded, { type = "error_marker", message = labelPrefix .. ": group nesting too deep (likely a circular reference)" })
+    return expanded
+  end
+  for a = 1, count do
+    local act = actions[a]
+    local label = string.format("%s%d", labelPrefix, a)
+    if act.type == "group" then
+      local group = FindActionGroupByName(act.target)
+      if not group then
+        table.insert(expanded, { type = "error_marker", message = string.format("%s: action group not found: %s", label, tostring(act.target)) })
+      elseif visitedGroups[act.target] then
+        table.insert(expanded, { type = "error_marker", message = string.format("%s: circular action group reference: %s", label, act.target) })
+      else
+        visitedGroups[act.target] = true
+        local sub = BuildExpandedActionList(group.actions, MaxActions, string.format("[%s]#", group.name), visitedGroups, depth + 1)
+        for _, subAct in ipairs(sub) do table.insert(expanded, subAct) end
+        visitedGroups[act.target] = nil -- a later, unrelated action can still reference the same group
+      end
+    elseif act.type ~= "none" then
+      table.insert(expanded, { type = act.type, target = act.target, control = act.control, value = act.value, sourceLabel = label })
+    end
+  end
+  return expanded
+end
+
+-- Dispatches an already-expanded (group references inlined) action list IN
+-- ORDER starting at `startIndex`. A "wait" action pauses the sequence for
+-- its Value (seconds) via a cancellable Timer and resumes with the
+-- remaining actions once it fires -- everything before a wait has already
+-- happened by the time it's reached, and nothing after it happens until
+-- the delay elapses. Reaching the end (or an empty list) finalizes the
+-- fire via FinishCueFire.
+DispatchCueActions = function(i, expanded, startIndex, errors)
+  for idx = startIndex, #expanded do
+    local act = expanded[idx]
     if act.type == "wait" then
       local seconds = tonumber(act.value) or 0
       if seconds > 0 then
-        cue.pendingTimer = CallAfter(function()
-          DispatchCueActions(i, a + 1, errors)
+        Cues[i].pendingTimer = CallAfter(function()
+          DispatchCueActions(i, expanded, idx + 1, errors)
         end, seconds)
         return -- resume later; do not fall through to FinishCueFire yet
       end
       -- seconds <= 0 (unset/invalid): treat as a no-op, continue immediately
-    elseif act.type ~= "none" then
+    elseif act.type == "error_marker" then
+      table.insert(errors, act.message)
+    else
       local ok, err = DispatchAction(act)
       if not ok then
-        table.insert(errors, string.format("Action %d (%s): %s", a, act.type, tostring(err)))
+        table.insert(errors, string.format("%s (%s): %s", act.sourceLabel or "Action", act.type, tostring(err)))
       end
     end
   end
@@ -1575,7 +1983,8 @@ FireCueNow = function(i)
     Controls.StatusLed.Color = StateColors.firing
   end)
 
-  DispatchCueActions(i, 1, {})
+  local expanded = BuildExpandedActionList(cue.actions, MaxActions, "Action ", {}, 0)
+  DispatchCueActions(i, expanded, 1, {})
 end
 
 OnCueButtonPressed = function(i)
@@ -1941,6 +2350,118 @@ for a = 1, MaxActions do
   end
 end
 
+-- Action Groups: reusable action bundles, wired up exactly like the cue
+-- action bank above but bound to ActionGroups[SelectedGroupIndex]. Entirely
+-- skipped when Max Action Groups is 0, since none of these controls exist.
+if MaxActionGroups > 0 then
+  for i = 1, MaxActionGroups do
+    ActionGroups[i] = { name = "Group " .. i, activeActions = 0, actions = {} }
+    for a = 1, MaxActions do
+      ActionGroups[i].actions[a] = { type = "none", target = "", control = "", value = "" }
+    end
+  end
+
+  Controls.SelectedGroup.EventHandler = function(ctl)
+    if Loading then return end
+    local numStr = ctl.String:match("^(%d+):")
+    local i = tonumber(numStr)
+    if i then SelectGroup(i) end
+  end
+
+  Controls.GroupEditName.EventHandler = function(ctl)
+    if Loading then return end
+    local g = ActionGroups[SelectedGroupIndex]
+    if Controls.LockToggle.Boolean then ctl.String = g.name; return end
+    g.name = ctl.String
+    RefreshSelectedGroupChoices()
+    pcall(function() Controls.SelectedGroup.String = string.format("%d: %s", SelectedGroupIndex, ctl.String) end)
+    MarkDirty(); SaveShowData()
+  end
+
+  Controls.AddGroupActionButton.EventHandler = function()
+    if Loading then return end
+    if Controls.LockToggle.Boolean then return end
+    local g = ActionGroups[SelectedGroupIndex]
+    if g.activeActions < MaxActions then
+      g.activeActions = g.activeActions + 1
+      RefreshGroupActionRowVisibility()
+      MarkDirty(); SaveShowData()
+    end
+  end
+
+  for a = 1, MaxActions do
+    local slotIdx = a -- capture per-iteration value for the closures below
+
+    pcall(function() Controls.GroupActionType[slotIdx].Choices = ActionTypes end)
+
+    Controls.GroupActionType[slotIdx].EventHandler = function(ctl)
+      if Loading then return end
+      local g = ActionGroups[SelectedGroupIndex]
+      if Controls.LockToggle.Boolean then ctl.String = g.actions[slotIdx].type; return end
+      g.actions[slotIdx].type = ClampActionType(ctl.String)
+      GroupRefreshActionTargetChoices(slotIdx)
+      GroupRefreshActionValueEditor(slotIdx)
+      MarkDirty(); SaveShowData()
+    end
+    Controls.GroupActionTarget[slotIdx].EventHandler = function(ctl)
+      if Loading then return end
+      local g = ActionGroups[SelectedGroupIndex]
+      if Controls.LockToggle.Boolean then ctl.String = g.actions[slotIdx].target; return end
+      g.actions[slotIdx].target = ctl.String
+      GroupRefreshActionControlChoices(slotIdx)
+      GroupRefreshActionValueEditor(slotIdx)
+      MarkDirty(); SaveShowData()
+    end
+    Controls.GroupActionControl[slotIdx].EventHandler = function(ctl)
+      if Loading then return end
+      local g = ActionGroups[SelectedGroupIndex]
+      if Controls.LockToggle.Boolean then ctl.String = g.actions[slotIdx].control; return end
+      g.actions[slotIdx].control = ctl.String
+      GroupRefreshActionValueEditor(slotIdx)
+      MarkDirty(); SaveShowData()
+    end
+    Controls.GroupActionValue[slotIdx].EventHandler = function(ctl)
+      if Loading then return end
+      local g = ActionGroups[SelectedGroupIndex]
+      if Controls.LockToggle.Boolean then ctl.String = g.actions[slotIdx].value; return end
+      g.actions[slotIdx].value = ctl.String
+      MarkDirty(); SaveShowData()
+    end
+    Controls.GroupActionValueBool[slotIdx].EventHandler = function(ctl)
+      if Loading then return end
+      local g = ActionGroups[SelectedGroupIndex]
+      if Controls.LockToggle.Boolean then
+        local mode, data = ParseValueSpec(g.actions[slotIdx].value)
+        ctl.Boolean = (mode == "boolean" and data) or false
+        return
+      end
+      g.actions[slotIdx].value = ctl.Boolean and "B:true" or "B:false"
+      ctl.Legend = ctl.Boolean and "TRUE" or "FALSE"
+      MarkDirty(); SaveShowData()
+    end
+    Controls.GroupActionRemove[slotIdx].EventHandler = function()
+      if Loading then return end
+      if Controls.LockToggle.Boolean then return end
+      local g = ActionGroups[SelectedGroupIndex]
+      for k = slotIdx, MaxActions - 1 do g.actions[k] = g.actions[k + 1] end
+      g.actions[MaxActions] = { type = "none", target = "", control = "", value = "" }
+      if g.activeActions > 0 then g.activeActions = g.activeActions - 1 end
+      PushSelectedGroupToEditor()
+      MarkDirty(); SaveShowData()
+    end
+    Controls.GroupActionMoveUp[slotIdx].EventHandler = function()
+      if Loading then return end
+      if Controls.LockToggle.Boolean then return end
+      GroupMoveActionUp(slotIdx)
+    end
+    Controls.GroupActionMoveDown[slotIdx].EventHandler = function()
+      if Loading then return end
+      if Controls.LockToggle.Boolean then return end
+      GroupMoveActionDown(slotIdx)
+    end
+  end
+end
+
 for i = 1, MaxDevices do
   Devices[i] = { name = "Device " .. i, component = "" }
   local devIdx = i -- capture
@@ -2005,6 +2526,9 @@ Init = function()
     RefreshSelectedCueChoices()
     SelectedCueIndex = 1
     PushSelectedCueToEditor()
+    RefreshSelectedGroupChoices()
+    SelectedGroupIndex = 1
+    PushSelectedGroupToEditor()
     SaveShowData()
   end
 
@@ -2024,7 +2548,7 @@ Init = function()
   StartPingHeartbeat()
 
   Loading = false
-  dbg("Init complete: %d cues, %d actions/cue, %d devices, %d UDP targets", MaxCues, MaxActions, MaxDevices, NumUdp)
+  dbg("Init complete: %d cues, %d actions/cue, %d devices, %d action groups, %d UDP targets", MaxCues, MaxActions, MaxDevices, MaxActionGroups, NumUdp)
 end
 
 Init()
