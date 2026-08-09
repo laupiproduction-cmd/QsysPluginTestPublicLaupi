@@ -1,0 +1,1274 @@
+--[[
+  VBAP 3D Object-Based Audio Panner
+  ==================================
+  A Q-SYS Designer plugin implementing Vector-Base Amplitude Panning (VBAP)
+  in full 3D, for live show use. Supports up to 20 speakers and 15 sources.
+
+  This plugin does NOT process audio itself. It computes a gain per
+  (source, speaker) crosspoint from geometry and writes those gains to the
+  Named Controls of a Matrix Mixer -- either one embedded by this plugin
+  (sized to Properties.NumSources x Properties.NumSpeakers) or an externally
+  placed native Matrix Mixer referenced by name. All math runs at control
+  rate on a throttled Timer, never in the audio path.
+
+  See README.md in this repository for setup, wiring, and API-verification
+  notes (some Q-SYS Developer Reference pages were unreachable while writing
+  this; anything not directly confirmed against a real example is flagged
+  there).
+]]--
+
+PluginInfo = {
+  Name = "Sound Design~VBAP 3D Panner",
+  Version = "1.0.0",
+  BuildVersion = "1.0.0",
+  Id = "b6f2f0e4-3d1a-4b7a-9c2e-1a2b3c4d5e6f",
+  Author = "Q-SYS Plugin Generator",
+  Description = "3D object-based audio panner using Vector-Base Amplitude Panning (VBAP). Up to 20 speakers, 15 sources.",
+  ShowDebug = true,
+}
+
+--============================================================
+-- Shared constants (used by GetProperties/GetControls/GetControlLayout/runtime)
+--============================================================
+local MAX_SOURCES = 15
+local MAX_SPEAKERS = 20
+local PAGE_NAMES = { "Room Setup", "Source Control", "Global Settings" }
+
+local Colors = {
+  Background   = { 45, 45, 48 },
+  Panel        = { 60, 60, 64 },
+  Accent       = { 0, 160, 226 },
+  Text         = { 230, 230, 230 },
+  Grid         = { 90, 90, 95 },
+  Speaker      = { 0, 200, 120 },
+  Source       = { 240, 160, 0 },
+  Warn         = { 220, 60, 60 },
+}
+
+local function SpeakerMarkerColor(i)
+  -- Deterministic, visually distinct-ish color per speaker index so several
+  -- overlapping Fader "handles" in the shared XY pad remain distinguishable.
+  local hues = {
+    {0,200,120},{0,160,226},{240,160,0},{200,60,200},{60,200,200},
+    {200,200,60},{160,60,220},{220,120,60},{60,120,220},{200,60,120},
+  }
+  return hues[((i - 1) % #hues) + 1]
+end
+
+function GetColor(props)
+  return { 0, 120, 190 }
+end
+
+function GetPrettyName(props)
+  return string.format("VBAP 3D Panner (%d src x %d spk)",
+    props["NumSources"].Value, props["NumSpeakers"].Value)
+end
+
+--============================================================
+-- Properties
+--============================================================
+function GetProperties()
+  local props = {}
+
+  table.insert(props, {
+    Name = "NumSources", Type = "integer", Min = 1, Max = MAX_SOURCES, Value = 4,
+  })
+  table.insert(props, {
+    Name = "NumSpeakers", Type = "integer", Min = 1, Max = MAX_SPEAKERS, Value = 8,
+  })
+  table.insert(props, {
+    Name = "Units", Type = "string", Value = "Feet",
+    Choices = { "Feet", "Meters" },
+  })
+  table.insert(props, {
+    Name = "MixerMode", Type = "string", Value = "Internal (Embedded)",
+    Choices = { "Internal (Embedded)", "External (Named Component)" },
+  })
+  table.insert(props, {
+    Name = "ExternalMixerName", Type = "string", Value = "VBAP Matrix Mixer",
+  })
+  table.insert(props, {
+    Name = "UpdateRateHz", Type = "integer", Min = 10, Max = 30, Value = 20,
+  })
+  table.insert(props, {
+    Name = "MaxWaypoints", Type = "integer", Min = 2, Max = 16, Value = 6,
+  })
+  table.insert(props, {
+    Name = "RoomExtent", Type = "double", Min = 5, Max = 200, Value = 30,
+  })
+
+  return props
+end
+
+function RectifyProperties(props)
+  -- Clamp counts defensively (Designer already enforces Min/Max, but a
+  -- saved design from a future version with wider limits should not blow
+  -- past what this version's control arrays were sized for).
+  if props["NumSources"].Value > MAX_SOURCES then props["NumSources"].Value = MAX_SOURCES end
+  if props["NumSpeakers"].Value > MAX_SPEAKERS then props["NumSpeakers"].Value = MAX_SPEAKERS end
+
+  local external = props["MixerMode"].Value == "External (Named Component)"
+  props["ExternalMixerName"].IsHidden = not external
+
+  return props
+end
+
+--============================================================
+-- Pages
+--============================================================
+function GetPages(props)
+  local pages = {}
+  for _, name in ipairs(PAGE_NAMES) do
+    table.insert(pages, { name = name })
+  end
+  return pages
+end
+
+--============================================================
+-- Controls
+--============================================================
+-- ControlType: Button, Knob, Indicator, Text
+-- ButtonType (ControlType=="Button"): Momentary, Toggle, Mute
+-- ControlUnit (ControlType=="Knob"): Hz, Float, Integer, Pan, Percent, Position, Seconds, dB
+function GetControls(props)
+  local ctrls = {}
+  local numSources = props["NumSources"].Value
+  local numSpeakers = props["NumSpeakers"].Value
+  local maxWp = props["MaxWaypoints"].Value
+  local extent = props["RoomExtent"].Value
+
+  --------------------------------------------------------------
+  -- Speakers
+  --------------------------------------------------------------
+  table.insert(ctrls, { Name = "SpeakerName", ControlType = "Text", Count = numSpeakers, PinStyle = "None", UserPin = false })
+  table.insert(ctrls, { Name = "SpeakerX", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = numSpeakers, PinStyle = "None", UserPin = false })
+  table.insert(ctrls, { Name = "SpeakerY", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = numSpeakers, PinStyle = "None", UserPin = false })
+  table.insert(ctrls, { Name = "SpeakerZ", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = numSpeakers, PinStyle = "None", UserPin = false })
+  table.insert(ctrls, { Name = "SpeakerTrim", ControlType = "Knob", ControlUnit = "dB", Min = -12, Max = 12, Count = numSpeakers, PinStyle = "None", UserPin = false })
+
+  --------------------------------------------------------------
+  -- Sources
+  --------------------------------------------------------------
+  table.insert(ctrls, { Name = "SourceName", ControlType = "Text", Count = numSources, PinStyle = "None", UserPin = false })
+  table.insert(ctrls, { Name = "SourceX", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = numSources, PinStyle = "None", UserPin = false })
+  table.insert(ctrls, { Name = "SourceY", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = numSources, PinStyle = "None", UserPin = false })
+  table.insert(ctrls, { Name = "SourceZ", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = numSources, PinStyle = "None", UserPin = false })
+  table.insert(ctrls, { Name = "SourceLevel", ControlType = "Knob", ControlUnit = "dB", Min = -100, Max = 12, Count = numSources, PinStyle = "None", UserPin = false })
+  table.insert(ctrls, { Name = "SourceMute", ControlType = "Button", ButtonType = "Mute", Count = numSources, PinStyle = "Input", UserPin = true })
+  table.insert(ctrls, { Name = "SourceSpread", ControlType = "Knob", ControlUnit = "Percent", Min = 0, Max = 100, Count = numSources, PinStyle = "None", UserPin = false })
+  table.insert(ctrls, { Name = "SourceAutoMode", ControlType = "Button", ButtonType = "Toggle", Count = numSources, PinStyle = "None", UserPin = false })
+  table.insert(ctrls, { Name = "SourceLiveOverride", ControlType = "Button", ButtonType = "Toggle", Count = numSources, PinStyle = "Input", UserPin = true })
+
+  -- External Named Controls: what OSC/MIDI/timecode/show-control writes to
+  -- while SourceAutoMode=="External" or SourceLiveOverride is engaged.
+  table.insert(ctrls, { Name = "SourceExternalX", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = numSources, PinStyle = "Input", UserPin = true })
+  table.insert(ctrls, { Name = "SourceExternalY", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = numSources, PinStyle = "Input", UserPin = true })
+  table.insert(ctrls, { Name = "SourceExternalZ", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = numSources, PinStyle = "Input", UserPin = true })
+
+  -- Path transport
+  table.insert(ctrls, { Name = "PathPlay", ControlType = "Button", ButtonType = "Momentary", Count = numSources, PinStyle = "Input", UserPin = true })
+  table.insert(ctrls, { Name = "PathStop", ControlType = "Button", ButtonType = "Momentary", Count = numSources, PinStyle = "Input", UserPin = true })
+  table.insert(ctrls, { Name = "PathLoop", ControlType = "Button", ButtonType = "Toggle", Count = numSources, PinStyle = "None", UserPin = false })
+  table.insert(ctrls, { Name = "PathStatus", ControlType = "Indicator", IndicatorType = "Text", Count = numSources, PinStyle = "None", UserPin = false })
+
+  -- Waypoints, flattened as (source-1)*maxWp + waypointIndex
+  local wpCount = numSources * maxWp
+  table.insert(ctrls, { Name = "WaypointX", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = wpCount, PinStyle = "None", UserPin = false })
+  table.insert(ctrls, { Name = "WaypointY", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = wpCount, PinStyle = "None", UserPin = false })
+  table.insert(ctrls, { Name = "WaypointZ", ControlType = "Knob", ControlUnit = "Float", Min = -extent, Max = extent, Count = wpCount, PinStyle = "None", UserPin = false })
+  table.insert(ctrls, { Name = "WaypointTime", ControlType = "Knob", ControlUnit = "Seconds", Min = 0.1, Max = 600, Count = wpCount, PinStyle = "None", UserPin = false })
+  table.insert(ctrls, { Name = "WaypointEase", ControlType = "Button", ButtonType = "Toggle", Count = wpCount, PinStyle = "None", UserPin = false })
+  table.insert(ctrls, { Name = "WaypointActive", ControlType = "Button", ButtonType = "Toggle", Count = wpCount, PinStyle = "None", UserPin = false })
+
+  --------------------------------------------------------------
+  -- Global / diagnostics
+  --------------------------------------------------------------
+  table.insert(ctrls, { Name = "TriangulationStatus", ControlType = "Indicator", IndicatorType = "Text", Count = 1, PinStyle = "None", UserPin = false })
+  table.insert(ctrls, { Name = "RecomputeTriangulation", ControlType = "Button", ButtonType = "Momentary", Count = 1, PinStyle = "None", UserPin = false })
+
+  return ctrls
+end
+
+--============================================================
+-- Control Layout
+--============================================================
+-- NOTE on the XY drag interaction: Q-SYS's stock 2D Positioner/Panner is a
+-- native (non-Lua) component, so its exact drag widget internals aren't
+-- inspectable from a plugin. The Developer Reference pages that would
+-- confirm a dedicated 2D-pad control style were unreachable while writing
+-- this (see README "API verification notes"). What IS confirmed (from a
+-- real working plugin's layout code) is the `Style = "Fader"` mechanic: a
+-- Knob control rendered as a linear draggable slider within its
+-- Position/Size rectangle. This plugin uses two such Faders per point
+-- (X and Y) sharing the SAME rectangle as a shared top-down canvas, one
+-- handle per speaker/source, colored distinctly -- a practical
+-- approximation of a 2D pad built entirely from confirmed building blocks.
+-- Precise numeric Knob entry is always available alongside it as the
+-- authoritative fallback.
+local CANVAS_POS = { 20, 50 }
+local CANVAS_SIZE = { 420, 420 }
+local ROW_H = 22
+
+function GetControlLayout(props)
+  local layout = {}
+  local graphics = {}
+
+  local numSources = props["NumSources"].Value
+  local numSpeakers = props["NumSpeakers"].Value
+  local maxWp = props["MaxWaypoints"].Value
+  local extent = props["RoomExtent"].Value
+  local units = props["Units"].Value
+  local mixerMode = props["MixerMode"].Value
+
+  local CurrentPage = PAGE_NAMES[props["page_index"].Value]
+
+  local function ctrlKey(name, i, count)
+    if count == 1 then return name end
+    return name .. " " .. i
+  end
+
+  local function addRoomGrid(pos, size)
+    table.insert(graphics, {
+      Type = "GroupBox", Text = string.format("Top-Down Room View (X/Y, %s)", units),
+      HTextAlign = "Left", IsBold = true,
+      Fill = Colors.Panel, StrokeColor = Colors.Grid, StrokeWidth = 1,
+      CornerRadius = 6, Position = { pos[1] - 10, pos[2] - 30 },
+      Size = { size[1] + 20, size[2] + 50 }, ZOrder = 1,
+    })
+    -- center crosshair (the room reference / listening origin, X=Y=Z=0)
+    table.insert(graphics, {
+      Type = "Line", Position = { pos[1], pos[2] + size[2] / 2 },
+      Size = { size[1], 0 }, StrokeColor = Colors.Grid, StrokeWidth = 1, ZOrder = 2,
+    })
+    table.insert(graphics, {
+      Type = "Line", Position = { pos[1] + size[1] / 2, pos[2] },
+      Size = { 0, size[2] }, StrokeColor = Colors.Grid, StrokeWidth = 1, ZOrder = 2,
+    })
+    table.insert(graphics, {
+      Type = "Label", Text = "origin (sweet spot)", TextSize = 10,
+      Color = Colors.Text, Position = { pos[1] + size[1] / 2 + 4, pos[2] + size[2] / 2 + 2 },
+      Size = { 120, 14 }, ZOrder = 3,
+    })
+  end
+
+  ----------------------------------------------------------------
+  -- Room Setup page
+  ----------------------------------------------------------------
+  if CurrentPage == "Room Setup" then
+    addRoomGrid(CANVAS_POS, CANVAS_SIZE)
+
+    for i = 1, numSpeakers do
+      local col = SpeakerMarkerColor(i)
+      layout[ctrlKey("SpeakerX", i, numSpeakers)] = {
+        PrettyName = string.format("Speaker %d~X Position", i),
+        Style = "Fader", Color = col,
+        Position = CANVAS_POS, Size = CANVAS_SIZE, ZOrder = 10 + i,
+      }
+      layout[ctrlKey("SpeakerY", i, numSpeakers)] = {
+        PrettyName = string.format("Speaker %d~Y Position", i),
+        Style = "Fader", Color = col,
+        Position = CANVAS_POS, Size = CANVAS_SIZE, ZOrder = 10 + i,
+      }
+    end
+
+    -- Compact per-speaker detail rows: Name / Z (height) / Trim, to the right of the canvas.
+    local listX = CANVAS_POS[1] + CANVAS_SIZE[1] + 30
+    table.insert(graphics, {
+      Type = "Header", Text = "Speaker  |  Name          Z (height)   Trim",
+      Position = { listX, CANVAS_POS[2] - 20 }, Size = { 320, 16 }, ZOrder = 3,
+    })
+    for i = 1, numSpeakers do
+      local y = CANVAS_POS[2] + (i - 1) * ROW_H
+      layout[ctrlKey("SpeakerName", i, numSpeakers)] = {
+        PrettyName = string.format("Speaker %d~Name", i),
+        Position = { listX, y }, Size = { 110, ROW_H - 2 }, ZOrder = 3,
+      }
+      layout[ctrlKey("SpeakerZ", i, numSpeakers)] = {
+        PrettyName = string.format("Speaker %d~Z Height", i),
+        Position = { listX + 115, y }, Size = { 90, ROW_H - 2 }, ZOrder = 3,
+      }
+      layout[ctrlKey("SpeakerTrim", i, numSpeakers)] = {
+        PrettyName = string.format("Speaker %d~Trim", i),
+        Position = { listX + 210, y }, Size = { 90, ROW_H - 2 }, ZOrder = 3,
+      }
+    end
+  end
+
+  ----------------------------------------------------------------
+  -- Source Control page
+  ----------------------------------------------------------------
+  if CurrentPage == "Source Control" then
+    addRoomGrid(CANVAS_POS, CANVAS_SIZE)
+
+    for i = 1, numSources do
+      local col = SpeakerMarkerColor(i)
+      layout[ctrlKey("SourceX", i, numSources)] = {
+        PrettyName = string.format("Source %d~X Position", i),
+        Style = "Fader", Color = col,
+        Position = CANVAS_POS, Size = CANVAS_SIZE, ZOrder = 10 + i,
+      }
+      layout[ctrlKey("SourceY", i, numSources)] = {
+        PrettyName = string.format("Source %d~Y Position", i),
+        Style = "Fader", Color = col,
+        Position = CANVAS_POS, Size = CANVAS_SIZE, ZOrder = 10 + i,
+      }
+    end
+
+    local listX = CANVAS_POS[1] + CANVAS_SIZE[1] + 30
+    table.insert(graphics, {
+      Type = "Header", Text = "Source strip: Name / Z / Level / Mute / Spread / Mode / Override",
+      Position = { listX, CANVAS_POS[2] - 20 }, Size = { 460, 16 }, ZOrder = 3,
+    })
+    for i = 1, numSources do
+      local y = CANVAS_POS[2] + (i - 1) * ROW_H
+      layout[ctrlKey("SourceName", i, numSources)] = {
+        PrettyName = string.format("Source %d~Name", i),
+        Position = { listX, y }, Size = { 80, ROW_H - 2 }, ZOrder = 3,
+      }
+      layout[ctrlKey("SourceZ", i, numSources)] = {
+        PrettyName = string.format("Source %d~Z Height", i),
+        Position = { listX + 82, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
+      }
+      layout[ctrlKey("SourceLevel", i, numSources)] = {
+        PrettyName = string.format("Source %d~Level", i),
+        Position = { listX + 146, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
+      }
+      layout[ctrlKey("SourceMute", i, numSources)] = {
+        PrettyName = string.format("Source %d~Mute", i), Legend = "M",
+        Position = { listX + 210, y }, Size = { 24, ROW_H - 2 }, ZOrder = 3,
+      }
+      layout[ctrlKey("SourceSpread", i, numSources)] = {
+        PrettyName = string.format("Source %d~Spread", i),
+        Position = { listX + 236, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
+      }
+      layout[ctrlKey("SourceAutoMode", i, numSources)] = {
+        PrettyName = string.format("Source %d~Automation Mode (off=Path, on=External)", i),
+        Legend = "Ext", OffColor = { 90, 90, 95 }, Color = Colors.Accent,
+        Position = { listX + 300, y }, Size = { 40, ROW_H - 2 }, ZOrder = 3,
+      }
+      layout[ctrlKey("SourceLiveOverride", i, numSources)] = {
+        PrettyName = string.format("Source %d~Live Override", i),
+        Legend = "LO", OffColor = { 90, 90, 95 }, Color = Colors.Warn,
+        Position = { listX + 344, y }, Size = { 36, ROW_H - 2 }, ZOrder = 3,
+      }
+    end
+
+    -- Path transport + external control target, one row per source, below the canvas.
+    local transportY = CANVAS_POS[2] + CANVAS_SIZE[2] + 40
+    table.insert(graphics, {
+      Type = "Header", Text = "Path Transport & External Position Inputs (OSC / MIDI / show control)",
+      Position = { CANVAS_POS[1], transportY - 20 }, Size = { 700, 16 }, ZOrder = 3,
+    })
+    for i = 1, numSources do
+      local y = transportY + (i - 1) * ROW_H
+      layout[ctrlKey("PathPlay", i, numSources)] = {
+        PrettyName = string.format("Source %d~Path Play", i), Legend = "Play",
+        Position = { CANVAS_POS[1], y }, Size = { 50, ROW_H - 2 }, ZOrder = 3,
+      }
+      layout[ctrlKey("PathStop", i, numSources)] = {
+        PrettyName = string.format("Source %d~Path Stop", i), Legend = "Stop",
+        Position = { CANVAS_POS[1] + 54, y }, Size = { 50, ROW_H - 2 }, ZOrder = 3,
+      }
+      layout[ctrlKey("PathLoop", i, numSources)] = {
+        PrettyName = string.format("Source %d~Path Loop", i), Legend = "Loop",
+        OffColor = { 90, 90, 95 }, Color = Colors.Accent,
+        Position = { CANVAS_POS[1] + 108, y }, Size = { 50, ROW_H - 2 }, ZOrder = 3,
+      }
+      layout[ctrlKey("PathStatus", i, numSources)] = {
+        PrettyName = string.format("Source %d~Path Status", i),
+        Position = { CANVAS_POS[1] + 162, y }, Size = { 140, ROW_H - 2 }, ZOrder = 3,
+      }
+      layout[ctrlKey("SourceExternalX", i, numSources)] = {
+        PrettyName = string.format("Source %d~External X", i),
+        Position = { CANVAS_POS[1] + 306, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
+      }
+      layout[ctrlKey("SourceExternalY", i, numSources)] = {
+        PrettyName = string.format("Source %d~External Y", i),
+        Position = { CANVAS_POS[1] + 370, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
+      }
+      layout[ctrlKey("SourceExternalZ", i, numSources)] = {
+        PrettyName = string.format("Source %d~External Z", i),
+        Position = { CANVAS_POS[1] + 434, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
+      }
+    end
+
+    -- Waypoint editor grid: rows = source x waypoint slot, grouped with a
+    -- header per source. Deliberately plain (spec: "not meant to replace a
+    -- full timeline/DAW") -- a scrollable grid of numeric fields.
+    local wpTop = transportY + numSources * ROW_H + 30
+    table.insert(graphics, {
+      Type = "Header", Text = "Path Waypoints (per source: X, Y, Z, time-to-next (s), eased, active)",
+      Position = { CANVAS_POS[1], wpTop - 20 }, Size = { 560, 16 }, ZOrder = 3,
+    })
+    for s = 1, numSources do
+      table.insert(graphics, {
+        Type = "Label", Text = string.format("Source %d path:", s), IsBold = true,
+        Color = Colors.Text, Position = { CANVAS_POS[1], wpTop + (s - 1) * (maxWp + 1) * ROW_H },
+        Size = { 200, ROW_H - 2 }, ZOrder = 3,
+      })
+      for w = 1, maxWp do
+        local flatIdx = (s - 1) * maxWp + w
+        local y = wpTop + (s - 1) * (maxWp + 1) * ROW_H + w * ROW_H
+        layout[ctrlKey("WaypointX", flatIdx, numSources * maxWp)] = {
+          PrettyName = string.format("Source %d Waypoint %d~X", s, w),
+          Position = { CANVAS_POS[1], y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
+        }
+        layout[ctrlKey("WaypointY", flatIdx, numSources * maxWp)] = {
+          PrettyName = string.format("Source %d Waypoint %d~Y", s, w),
+          Position = { CANVAS_POS[1] + 64, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
+        }
+        layout[ctrlKey("WaypointZ", flatIdx, numSources * maxWp)] = {
+          PrettyName = string.format("Source %d Waypoint %d~Z", s, w),
+          Position = { CANVAS_POS[1] + 128, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
+        }
+        layout[ctrlKey("WaypointTime", flatIdx, numSources * maxWp)] = {
+          PrettyName = string.format("Source %d Waypoint %d~Time to next (s)", s, w),
+          Position = { CANVAS_POS[1] + 192, y }, Size = { 62, ROW_H - 2 }, ZOrder = 3,
+        }
+        layout[ctrlKey("WaypointEase", flatIdx, numSources * maxWp)] = {
+          PrettyName = string.format("Source %d Waypoint %d~Eased", s, w), Legend = "Ease",
+          OffColor = { 90, 90, 95 }, Color = Colors.Accent,
+          Position = { CANVAS_POS[1] + 256, y }, Size = { 46, ROW_H - 2 }, ZOrder = 3,
+        }
+        layout[ctrlKey("WaypointActive", flatIdx, numSources * maxWp)] = {
+          PrettyName = string.format("Source %d Waypoint %d~Active", s, w), Legend = "On",
+          OffColor = { 90, 90, 95 }, Color = Colors.Speaker,
+          Position = { CANVAS_POS[1] + 304, y }, Size = { 40, ROW_H - 2 }, ZOrder = 3,
+        }
+      end
+    end
+  end
+
+  ----------------------------------------------------------------
+  -- Global Settings page
+  ----------------------------------------------------------------
+  if CurrentPage == "Global Settings" then
+    table.insert(graphics, {
+      Type = "GroupBox", Text = "Diagnostics",
+      HTextAlign = "Left", IsBold = true,
+      Fill = Colors.Panel, StrokeColor = Colors.Grid, StrokeWidth = 1,
+      CornerRadius = 6, Position = { 20, 20 }, Size = { 460, 130 }, ZOrder = 1,
+    })
+    layout["TriangulationStatus"] = {
+      PrettyName = "Triangulation Status",
+      Position = { 40, 55 }, Size = { 420, ROW_H }, ZOrder = 3,
+    }
+    layout["RecomputeTriangulation"] = {
+      PrettyName = "Force Recompute Triangulation", Legend = "Recompute Triangulation Now",
+      Position = { 40, 85 }, Size = { 200, 28 }, ZOrder = 3,
+    }
+    table.insert(graphics, {
+      Type = "Label",
+      Text = string.format(
+        "Mixer mode: %s%s\nUpdate rate: %d Hz  |  Sources: %d  Speakers: %d  Units: %s",
+        mixerMode,
+        mixerMode == "External (Named Component)" and (" (\"" .. props["ExternalMixerName"].Value .. "\")") or "",
+        props["UpdateRateHz"].Value, numSources, numSpeakers, units),
+      TextSize = 12, Color = Colors.Text,
+      Position = { 40, 118 }, Size = { 420, 28 }, ZOrder = 3,
+    })
+  end
+
+  return layout, graphics
+end
+
+--============================================================
+-- Pins / embedded Matrix Mixer component / wiring
+--============================================================
+-- Internal mode: the plugin embeds its own Matrix Mixer, sized exactly to
+-- NumSources x NumSpeakers (never a full 15x20 regardless of what a show
+-- actually uses), and exposes per-source input pins / per-speaker output
+-- pins wired straight through to it.
+--
+-- External mode: the plugin does no audio routing of its own -- an
+-- engineer places a native Matrix Mixer in the design, wires it up by
+-- hand, and this plugin only writes gain values into its Named Controls
+-- (resolved at runtime via Component.New(Properties.ExternalMixerName)).
+local MIXER_COMPONENT_NAME = "vbap_mixer"
+
+function GetPins(props)
+  local pins = {}
+  if props["MixerMode"].Value == "Internal (Embedded)" then
+    for i = 1, props["NumSources"].Value do
+      table.insert(pins, { Name = string.format("Source %d In", i), Direction = "input" })
+    end
+    for j = 1, props["NumSpeakers"].Value do
+      table.insert(pins, { Name = string.format("Speaker %d Out", j), Direction = "output" })
+    end
+  end
+  return pins
+end
+
+function GetComponents(props)
+  if props["MixerMode"].Value ~= "Internal (Embedded)" then
+    return {}
+  end
+  return {
+    {
+      Name = MIXER_COMPONENT_NAME,
+      Type = "mixer",
+      Properties = {
+        ["n_inputs"] = props["NumSources"].Value,
+        ["n_outputs"] = props["NumSpeakers"].Value,
+      },
+    },
+  }
+end
+
+function GetWiring(props)
+  if props["MixerMode"].Value ~= "Internal (Embedded)" then
+    return {}
+  end
+  local wiring = {}
+  for i = 1, props["NumSources"].Value do
+    table.insert(wiring, {
+      string.format("Source %d In", i),
+      string.format("%s Input %d", MIXER_COMPONENT_NAME, i),
+    })
+  end
+  for j = 1, props["NumSpeakers"].Value do
+    table.insert(wiring, {
+      string.format("%s Output %d", MIXER_COMPONENT_NAME, j),
+      string.format("Speaker %d Out", j),
+    })
+  end
+  return wiring
+end
+
+--============================================================================
+-- RUNTIME (only executes when the plugin is actually placed/running --
+-- never during property editing/design-time GetControls/GetControlLayout
+-- calls, per standard Q-SYS plugin convention)
+--============================================================================
+if Controls then
+
+--============================================================
+-- VBAP core math (vector ops, 3x3 inverse, convex-hull triangulation with
+-- coplanar-fallback, triangle coherence search, DBAP spread blend).
+-- Verified standalone against a battery of geometry tests (cube, icosahedron
+-- full-sphere coverage, coplanar ring, degenerate/singular inputs, 2-speaker
+-- edge cases) before being embedded here -- see the test harness mentioned
+-- in README.md if this math ever needs to be re-verified in isolation.
+--============================================================
+local EPS = 1e-9
+
+local function vsub(a, b) return { a[1]-b[1], a[2]-b[2], a[3]-b[3] } end
+local function vadd(a, b) return { a[1]+b[1], a[2]+b[2], a[3]+b[3] } end
+local function vscale(a, s) return { a[1]*s, a[2]*s, a[3]*s } end
+local function vdot(a, b) return a[1]*b[1] + a[2]*b[2] + a[3]*b[3] end
+local function vcross(a, b)
+  return {
+    a[2]*b[3] - a[3]*b[2],
+    a[3]*b[1] - a[1]*b[3],
+    a[1]*b[2] - a[2]*b[1],
+  }
+end
+local function vlen(a) return math.sqrt(vdot(a, a)) end
+local function vnorm(a)
+  local l = vlen(a)
+  if l < EPS then return { 0, 0, 0 }, 0 end
+  return { a[1]/l, a[2]/l, a[3]/l }, l
+end
+
+-- Closed-form 3x3 inverse via adjugate/determinant. Returns nil if singular
+-- (the 3 speaker directions are coplanar/collinear -- caller must skip this
+-- triangle rather than divide by ~0).
+local function mat3_inverse(r1, r2, r3)
+  local a,b,c = r1[1], r1[2], r1[3]
+  local d,e,f = r2[1], r2[2], r2[3]
+  local g,h,i = r3[1], r3[2], r3[3]
+
+  local A =  (e*i - f*h)
+  local B = -(d*i - f*g)
+  local C =  (d*h - e*g)
+  local det = a*A + b*B + c*C
+  if math.abs(det) < 1e-9 then return nil end
+
+  local D = -(b*i - c*h)
+  local E =  (a*i - c*g)
+  local F = -(a*h - b*g)
+  local G =  (b*f - c*e)
+  local H = -(a*f - c*d)
+  local I =  (a*e - b*d)
+
+  local invDet = 1 / det
+  return {
+    { A*invDet, D*invDet, G*invDet },
+    { B*invDet, E*invDet, H*invDet },
+    { C*invDet, F*invDet, I*invDet },
+  }
+end
+
+local function mat3_mul_vec(m, v)
+  -- g = p * Linv  (row vector times matrix) -- the standard VBAP gain solve.
+  return {
+    v[1]*m[1][1] + v[2]*m[2][1] + v[3]*m[3][1],
+    v[1]*m[1][2] + v[2]*m[2][2] + v[3]*m[3][2],
+    v[1]*m[1][3] + v[2]*m[2][3] + v[3]*m[3][3],
+  }
+end
+
+-- Standard VBAP convex-hull triangulation of the speaker set (treated as
+-- unit vectors from the room origin). Brute-force over speaker triples is
+-- fine here -- this only ever runs at room-edit time, never per-frame, and
+-- n <= 20 keeps C(20,3) = 1140 candidate triples cheap.
+--
+-- Coplanar speaker sets (e.g. a horizontal ring, or a flat wall of
+-- speakers -- anything where the hull collapses to 2D) are detected and
+-- handled via a 2D pairwise-segment fallback instead of a degenerate 3D
+-- hull. Coplanar hull FACES within an otherwise-3D layout (e.g. 4 speakers
+-- forming a perfect rectangle on one wall of a cube-like rig) are also
+-- handled: naive per-triple hull testing finds every one of the C(k,3)
+-- triples across such a face as "valid" (nothing else pokes outward past
+-- it), which would double-count/overlap; those get collapsed to a single
+-- canonical fan triangulation of that face.
+local function build_triangulation(speakers)
+  local n = #speakers
+  local triangles = {}
+
+  local function findAnyNormal()
+    for i = 1, n - 1 do
+      for j = i + 1, n do
+        local cr = vcross(speakers[i].dir, speakers[j].dir)
+        local l = vlen(cr)
+        if l > 1e-6 then return vscale(cr, 1 / l) end
+      end
+    end
+    return nil
+  end
+
+  local isDegenerate2D = false
+  if n >= 2 then
+    local normal = findAnyNormal()
+    if normal then
+      isDegenerate2D = true
+      for k = 1, n do
+        if math.abs(vdot(normal, speakers[k].dir)) > 1e-3 then isDegenerate2D = false; break end
+      end
+    else
+      isDegenerate2D = true -- every speaker direction is parallel/antiparallel: fully degenerate
+    end
+  end
+
+  if isDegenerate2D and n >= 2 then
+    local normal = findAnyNormal() or { 0, 0, 1 }
+    local u = speakers[1].dir
+    local v = vnorm(vcross(normal, u))
+
+    local order = {}
+    for i = 1, n do order[i] = i end
+    table.sort(order, function(ia, ib)
+      local da, db = speakers[ia].dir, speakers[ib].dir
+      return math.atan(vdot(da, v), vdot(da, u)) < math.atan(vdot(db, v), vdot(db, u))
+    end)
+
+    for k = 1, n do
+      if not (n == 2 and k == 2) then -- avoid inserting the same pair twice when there are only 2 speakers
+        local i = order[k]
+        local j = order[(k % n) + 1]
+        local di, dj = speakers[i].dir, speakers[j].dir
+        local ui, vi = vdot(di, u), vdot(di, v)
+        local uj, vj = vdot(dj, u), vdot(dj, v)
+        local det = ui*vj - uj*vi
+        if math.abs(det) > 1e-9 then
+          local invDet = 1 / det
+          local inv2 = { { vj*invDet, -vi*invDet }, { -uj*invDet, ui*invDet } }
+          table.insert(triangles, { a = i, b = j, inv2 = inv2, planeU = u, planeV = v })
+        end
+      end
+    end
+    return triangles, true
+  end
+
+  local raw = {}
+  for i = 1, n - 2 do
+    for j = i + 1, n - 1 do
+      for k = j + 1, n do
+        local pi, pj, pk = speakers[i].dir, speakers[j].dir, speakers[k].dir
+        local nrm = vcross(vsub(pj, pi), vsub(pk, pi))
+        if vlen(nrm) > 1e-9 then
+          local a, b, c = i, j, k
+          if vdot(nrm, pi) < 0 then
+            b, c = k, j
+            nrm = vcross(vsub(speakers[b].dir, pi), vsub(speakers[c].dir, pi))
+          end
+          local valid = true
+          for m = 1, n do
+            if m ~= a and m ~= b and m ~= c then
+              if vdot(nrm, vsub(speakers[m].dir, pi)) > 1e-6 then valid = false; break end
+            end
+          end
+          if valid then
+            table.insert(raw, { a = a, b = b, c = c, nrm = vnorm(nrm) })
+          end
+        end
+      end
+    end
+  end
+
+  -- Collapse coplanar hull-face groups (see comment above) into a canonical
+  -- fan triangulation, keyed by quantized outward normal.
+  local function keyComponent(x)
+    if x == 0 then x = 0 end -- collapse IEEE754 -0.0 so it hashes the same as 0.0
+    return string.format("%.4f", x)
+  end
+  local groups, groupOrder = {}, {}
+  for _, t in ipairs(raw) do
+    local key = keyComponent(t.nrm[1]) .. "_" .. keyComponent(t.nrm[2]) .. "_" .. keyComponent(t.nrm[3])
+    local grp = groups[key]
+    if not grp then
+      grp = { normal = t.nrm, verts = {} }
+      groups[key] = grp
+      table.insert(groupOrder, key)
+    end
+    grp.verts[t.a] = true; grp.verts[t.b] = true; grp.verts[t.c] = true
+  end
+
+  for _, key in ipairs(groupOrder) do
+    local grp = groups[key]
+    local idxList = {}
+    for idx in pairs(grp.verts) do table.insert(idxList, idx) end
+
+    if #idxList == 3 then
+      local a, b, c = idxList[1], idxList[2], idxList[3]
+      local inv = mat3_inverse(speakers[a].dir, speakers[b].dir, speakers[c].dir)
+      if inv then table.insert(triangles, { a = a, b = b, c = c, inv = inv }) end
+    else
+      local normal = grp.normal
+      local ref = speakers[idxList[1]].dir
+      local u = vnorm(vsub(ref, vscale(normal, vdot(ref, normal))))
+      local v = vcross(normal, u)
+      table.sort(idxList, function(ia, ib)
+        local da, db = speakers[ia].dir, speakers[ib].dir
+        return math.atan(vdot(da, v), vdot(da, u)) < math.atan(vdot(db, v), vdot(db, u))
+      end)
+      for k = 2, #idxList - 1 do
+        local a, b, c = idxList[1], idxList[k], idxList[k+1]
+        local inv = mat3_inverse(speakers[a].dir, speakers[b].dir, speakers[c].dir)
+        if inv then table.insert(triangles, { a = a, b = b, c = c, inv = inv }) end
+      end
+    end
+  end
+
+  return triangles, false
+end
+
+local function triangle_gains_3d(tri, dir)
+  local g = mat3_mul_vec(tri.inv, dir)
+  return g[1], g[2], g[3]
+end
+
+local function triangle_gains_2d(tri, dir)
+  local pu, pv = vdot(dir, tri.planeU), vdot(dir, tri.planeV)
+  local m = tri.inv2
+  return pu*m[1][1] + pv*m[2][1], pu*m[1][2] + pv*m[2][2]
+end
+
+-- For each triangle, the indices of triangles sharing an edge (3D: 2 of 3
+-- vertices; 2D ring: a shared endpoint). Lets the runtime coherence search
+-- check "last active triangle, then its neighbors" before a full scan --
+-- sources move continuously during automation, so consecutive updates
+-- almost always land in the same or an adjacent triangle.
+local function build_adjacency(triangles, is2D)
+  local adj = {}
+  for i = 1, #triangles do
+    adj[i] = {}
+    local ti = triangles[i]
+    for j = 1, #triangles do
+      if j ~= i then
+        local tj = triangles[j]
+        if is2D then
+          if ti.a == tj.a or ti.a == tj.b or ti.b == tj.a or ti.b == tj.b then
+            table.insert(adj[i], j)
+          end
+        else
+          local shared = 0
+          for _, x in ipairs({ ti.a, ti.b, ti.c }) do
+            for _, y in ipairs({ tj.a, tj.b, tj.c }) do
+              if x == y then shared = shared + 1 end
+            end
+          end
+          if shared >= 2 then table.insert(adj[i], j) end
+        end
+      end
+    end
+  end
+  return adj
+end
+
+-- Returns triangleIndex, gainA, gainB, gainC, exact
+-- `exact` is false only when `dir` falls outside every triangle (shouldn't
+-- happen with a fully-enclosing speaker layout) and the result is instead
+-- clamped to the least-bad candidate, per spec step 3.
+local function find_active_triangle(triangles, dir, lastIndex, is2D, adjacency)
+  local function testTri(idx)
+    local tri = triangles[idx]
+    if is2D then
+      local ga, gb = triangle_gains_2d(tri, dir)
+      if ga >= -1e-6 and gb >= -1e-6 then return idx, ga, gb, 0 end
+    else
+      local ga, gb, gc = triangle_gains_3d(tri, dir)
+      if ga >= -1e-6 and gb >= -1e-6 and gc >= -1e-6 then return idx, ga, gb, gc end
+    end
+    return nil
+  end
+
+  if lastIndex and triangles[lastIndex] then
+    local idx, a, b, c = testTri(lastIndex)
+    if idx then return idx, a, b, c, true end
+    if adjacency and adjacency[lastIndex] then
+      for _, nIdx in ipairs(adjacency[lastIndex]) do
+        local ridx, a2, b2, c2 = testTri(nIdx)
+        if ridx then return ridx, a2, b2, c2, true end
+      end
+    end
+  end
+  for idx = 1, #triangles do
+    if idx ~= lastIndex then
+      local ridx, a, b, c = testTri(idx)
+      if ridx then return ridx, a, b, c, true end
+    end
+  end
+
+  local bestIdx, bestScore, bestA, bestB, bestC = nil, -math.huge, 0, 0, 0
+  for idx = 1, #triangles do
+    local tri = triangles[idx]
+    local a, b, c
+    if is2D then a, b = triangle_gains_2d(tri, dir); c = 0
+    else a, b, c = triangle_gains_3d(tri, dir) end
+    local score = math.min(a, b, c or 0)
+    if score > bestScore then bestScore, bestIdx, bestA, bestB, bestC = score, idx, a, b, c end
+  end
+  if bestIdx then
+    return bestIdx, math.max(bestA, 0), math.max(bestB, 0), math.max(bestC or 0, 0), false
+  end
+  return nil
+end
+
+local DB_FLOOR = -100
+local function linear_to_db(g)
+  if g <= 1e-5 then return DB_FLOOR end
+  local db = 20 * math.log(g, 10)
+  if db < DB_FLOOR then return DB_FLOOR end
+  return db
+end
+
+local function nearest_speakers(speakers, dir, count)
+  local dists = {}
+  for i, sp in ipairs(speakers) do
+    table.insert(dists, { idx = i, d = 1 - vdot(sp.dir, dir) })
+  end
+  table.sort(dists, function(a, b) return a.d < b.d end)
+  local out = {}
+  for i = 1, math.min(count, #dists) do out[i] = dists[i] end
+  return out
+end
+
+-- Energy-preserving blend between the strict 3-speaker VBAP result and a
+-- wider DBAP-style vector across the N nearest speakers, cross-faded by
+-- `spread` (0..1) and renormalized to constant power.
+local function apply_spread(vbapGains, speakers, dir, spread, nearestCount)
+  if spread <= 0 then return vbapGains end
+
+  local dbap, sumSq = {}, 0
+  for _, e in ipairs(nearest_speakers(speakers, dir, nearestCount)) do
+    local w = 1 / math.max(e.d, 1e-4)
+    dbap[e.idx] = w
+    sumSq = sumSq + w * w
+  end
+  local norm = math.sqrt(sumSq)
+  if norm > 1e-9 then for k in pairs(dbap) do dbap[k] = dbap[k] / norm end end
+
+  local allIdx = {}
+  for k in pairs(vbapGains) do allIdx[k] = true end
+  for k in pairs(dbap) do allIdx[k] = true end
+
+  local blended, sumSq2 = {}, 0
+  for k in pairs(allIdx) do
+    local g = (1 - spread) * (vbapGains[k] or 0) + spread * (dbap[k] or 0)
+    blended[k] = g
+    sumSq2 = sumSq2 + g * g
+  end
+  local norm2 = math.sqrt(sumSq2)
+  if norm2 > 1e-9 then for k in pairs(blended) do blended[k] = blended[k] / norm2 end end
+  return blended
+end
+
+local function lerp(a, b, t) return a + (b - a) * t end
+local function smoothstep(t) return t * t * (3 - 2 * t) end
+
+--============================================================
+-- Plugin state
+--============================================================
+local numSources = Properties["NumSources"].Value
+local numSpeakers = Properties["NumSpeakers"].Value
+local maxWp = Properties["MaxWaypoints"].Value
+local updateRateHz = Properties["UpdateRateHz"].Value
+
+local speakers = {}          -- [j] = { x=,y=,z=, dir={} }
+local triangles = {}
+local adjacency = {}
+local isDegenerate2D = false
+local lastTriangleForSource = {}   -- [i] = triangle index, for coherence search
+local lastGainDb = {}              -- [i][j] = last written dB, skip redundant writes
+local dirtySource = {}             -- [i] = true if position/level/mute/spread changed since last tick
+local pathState = {}               -- [i] = { playing=, segIdx=, segT=, active={waypoints} }
+local override = {}                -- [i] = { crossfading=, elapsed=, fromPos={x,y,z} }
+
+for i = 1, numSources do
+  lastGainDb[i] = {}
+  dirtySource[i] = true
+  pathState[i] = { playing = false, segIdx = 1, segT = 0, active = {} }
+  override[i] = { crossfading = false, elapsed = 0, fromPos = { 0, 0, 0 } }
+end
+
+--------------------------------------------------------------
+-- Matrix Mixer resolution: embedded component (Internal mode) or a
+-- Component.New() reference to a native Matrix Mixer the engineer placed
+-- and wired by hand (External mode). Either way, crosspoint gains are
+-- addressed with the same Named Control convention: input.N.output.M.gain
+--------------------------------------------------------------
+local mixerRef = nil
+if Properties["MixerMode"].Value == "Internal (Embedded)" then
+  mixerRef = _G[MIXER_COMPONENT_NAME]
+else
+  local ok, comp = pcall(Component.New, Properties["ExternalMixerName"].Value)
+  if ok then mixerRef = comp end
+end
+
+local function WriteCrosspointGain(srcIdx, spkIdx, dB)
+  if not mixerRef then return end
+  local ctrl = mixerRef[string.format("input.%d.output.%d.gain", srcIdx, spkIdx)]
+  if ctrl then ctrl.Value = dB end
+end
+
+--------------------------------------------------------------
+-- Triangulation (setup phase -- recomputed only when the room/speaker
+-- layout changes, never per-frame; see debounce timer further down).
+--------------------------------------------------------------
+local function RebuildTriangulation()
+  speakers = {}
+  for j = 1, numSpeakers do
+    local x = Controls.SpeakerX[j].Value
+    local y = Controls.SpeakerY[j].Value
+    local z = Controls.SpeakerZ[j].Value
+    local dir, len = vnorm({ x, y, z })
+    if len < 1e-6 then dir = { 0, 0, 1 } end -- speaker sitting exactly on the origin: arbitrary stable direction, don't crash
+    speakers[j] = { x = x, y = y, z = z, dir = dir }
+  end
+
+  triangles, isDegenerate2D = build_triangulation(speakers)
+  adjacency = build_adjacency(triangles, isDegenerate2D)
+
+  for i = 1, numSources do
+    lastTriangleForSource[i] = nil -- topology changed, coherence cache is stale
+    dirtySource[i] = true
+    lastGainDb[i] = {}
+  end
+
+  local status
+  if #triangles == 0 then
+    status = string.format("ERROR: no valid triangulation for %d speaker(s) -- need >=2 non-collinear speakers", numSpeakers)
+  elseif isDegenerate2D then
+    status = string.format("Coplanar layout: 2D fallback, %d speakers / %d segments", numSpeakers, #triangles)
+  else
+    status = string.format("OK: %d speakers / %d triangles (full 3D coverage)", numSpeakers, #triangles)
+  end
+  Controls.TriangulationStatus.String = status
+end
+
+-- Debounce room edits: dragging a speaker fires many EventHandler calls per
+-- second, but triangulation must only run once the layout settles, never
+-- mid-drag or per-frame (spec section 3 setup-phase requirement).
+local roomDebounce = Timer.New()
+roomDebounce.EventHandler = function() RebuildTriangulation() end
+local function MarkRoomDirty()
+  roomDebounce:Stop()
+  roomDebounce:Start(0.25)
+end
+
+--------------------------------------------------------------
+-- Effective source position: resolves Automation Mode / Live Override /
+-- override-release crossfade down to the (x,y,z) that actually drives VBAP
+-- this tick. SourceX/Y/Z themselves are the Path-mode "position of record"
+-- -- written by hand when stopped, advanced by AdvancePaths() when playing.
+--------------------------------------------------------------
+local function ResolvePosition(i)
+  local externalMode = Controls.SourceAutoMode[i].Boolean
+  local liveOverride = Controls.SourceLiveOverride[i].Boolean
+
+  if externalMode or liveOverride then
+    return Controls.SourceExternalX[i].Value, Controls.SourceExternalY[i].Value, Controls.SourceExternalZ[i].Value
+  end
+
+  local ov = override[i]
+  if ov.crossfading then
+    local t = math.min(ov.elapsed / 0.3, 1)
+    local px, py, pz = Controls.SourceX[i].Value, Controls.SourceY[i].Value, Controls.SourceZ[i].Value
+    if t >= 1 then
+      ov.crossfading = false
+      return px, py, pz
+    end
+    return lerp(ov.fromPos[1], px, t), lerp(ov.fromPos[2], py, t), lerp(ov.fromPos[3], pz, t)
+  end
+
+  return Controls.SourceX[i].Value, Controls.SourceY[i].Value, Controls.SourceZ[i].Value
+end
+
+--------------------------------------------------------------
+-- Runtime gain computation (event-driven via the shared Timer below, never
+-- polled/per-frame beyond that fixed throttled rate).
+--------------------------------------------------------------
+local function UpdateSourceGains(i)
+  local x, y, z = ResolvePosition(i)
+  local dir = vnorm({ x, y, z })
+  if vlen({ x, y, z }) < 1e-6 then dir = { 0, 0, 1 } end -- source exactly at origin: arbitrary stable direction
+
+  if #triangles == 0 then
+    for j = 1, numSpeakers do
+      if lastGainDb[i][j] ~= DB_FLOOR then
+        WriteCrosspointGain(i, j, DB_FLOOR)
+        lastGainDb[i][j] = DB_FLOOR
+      end
+    end
+    return
+  end
+
+  local idx, ga, gb, gc = find_active_triangle(triangles, dir, lastTriangleForSource[i], isDegenerate2D, adjacency)
+  lastTriangleForSource[i] = idx
+  local tri = triangles[idx]
+
+  local vbapMap = {}
+  if isDegenerate2D then
+    local norm = math.sqrt(ga*ga + gb*gb)
+    if norm > 1e-9 then ga, gb = ga/norm, gb/norm end
+    vbapMap[tri.a] = ga
+    vbapMap[tri.b] = gb
+  else
+    local norm = math.sqrt(ga*ga + gb*gb + gc*gc)
+    if norm > 1e-9 then ga, gb, gc = ga/norm, gb/norm, gc/norm end
+    vbapMap[tri.a] = ga
+    vbapMap[tri.b] = gb
+    vbapMap[tri.c] = gc
+  end
+
+  local spread = Controls.SourceSpread[i].Value / 100
+  local finalMap = vbapMap
+  if spread > 0 then
+    finalMap = apply_spread(vbapMap, speakers, dir, spread, math.min(6, numSpeakers))
+  end
+
+  local levelLin = 10 ^ (Controls.SourceLevel[i].Value / 20)
+  if Controls.SourceMute[i].Boolean then levelLin = 0 end
+
+  for j = 1, numSpeakers do
+    local g = finalMap[j] or 0
+    local trimLin = 10 ^ (Controls.SpeakerTrim[j].Value / 20)
+    local dB = linear_to_db(g * levelLin * trimLin)
+    if lastGainDb[i][j] ~= dB then
+      WriteCrosspointGain(i, j, dB)
+      lastGainDb[i][j] = dB
+    end
+  end
+end
+
+--------------------------------------------------------------
+-- Path automation
+--------------------------------------------------------------
+local function BuildActiveWaypoints(i)
+  local wps = {}
+  for w = 1, maxWp do
+    local flat = (i - 1) * maxWp + w
+    if Controls.WaypointActive[flat].Boolean then
+      table.insert(wps, {
+        x = Controls.WaypointX[flat].Value,
+        y = Controls.WaypointY[flat].Value,
+        z = Controls.WaypointZ[flat].Value,
+        time = math.max(Controls.WaypointTime[flat].Value, 0.05),
+        ease = Controls.WaypointEase[flat].Boolean,
+      })
+    end
+  end
+  return wps
+end
+
+local function RefreshSourceWaypoints(i)
+  pathState[i].active = BuildActiveWaypoints(i)
+  if pathState[i].segIdx > math.max(#pathState[i].active - 1, 1) then
+    pathState[i].segIdx = 1
+    pathState[i].segT = 0
+  end
+end
+
+for i = 1, numSources do RefreshSourceWaypoints(i) end
+
+local function UpdatePathStatus(i)
+  local st = pathState[i]
+  local n = #st.active
+  local txt
+  if n == 0 then
+    txt = "No waypoints"
+  elseif n == 1 then
+    txt = "Single point (no path)"
+  elseif st.playing then
+    local dur = st.active[st.segIdx].time
+    local pct = dur > 0 and math.floor(100 * st.segT / dur) or 100
+    txt = string.format("Playing seg %d/%d (%d%%)%s", st.segIdx, n - 1, pct,
+      Controls.PathLoop[i].Boolean and " [loop]" or "")
+  else
+    txt = string.format("Stopped at seg %d/%d", st.segIdx, math.max(n - 1, 1))
+  end
+  Controls.PathStatus[i].String = txt
+end
+
+local function AdvancePaths(dt)
+  for i = 1, numSources do
+    local externalMode = Controls.SourceAutoMode[i].Boolean
+    local liveOverride = Controls.SourceLiveOverride[i].Boolean
+    local st = pathState[i]
+
+    if st.playing and not externalMode and not liveOverride then
+      local wps = st.active
+      if #wps < 2 then
+        -- Single waypoint (or none): nothing to animate toward: jump once, then stop.
+        if #wps == 1 then
+          Controls.SourceX[i].Value = wps[1].x
+          Controls.SourceY[i].Value = wps[1].y
+          Controls.SourceZ[i].Value = wps[1].z
+        end
+        st.playing = false
+        dirtySource[i] = true
+      else
+        st.segT = st.segT + dt
+        local dur = wps[st.segIdx].time
+        while st.segT >= dur and st.playing do
+          st.segT = st.segT - dur
+          st.segIdx = st.segIdx + 1
+          if st.segIdx > #wps - 1 then
+            if Controls.PathLoop[i].Boolean then
+              st.segIdx = 1
+            else
+              st.segIdx = #wps - 1
+              st.segT = dur
+              st.playing = false
+            end
+          end
+          dur = wps[st.segIdx].time
+        end
+
+        local k = st.segIdx
+        local t = dur > 0 and (st.segT / dur) or 1
+        if t > 1 then t = 1 end
+        if wps[k].ease then t = smoothstep(t) end
+        Controls.SourceX[i].Value = lerp(wps[k].x, wps[k+1].x, t)
+        Controls.SourceY[i].Value = lerp(wps[k].y, wps[k+1].y, t)
+        Controls.SourceZ[i].Value = lerp(wps[k].z, wps[k+1].z, t)
+        dirtySource[i] = true
+      end
+      UpdatePathStatus(i)
+    end
+  end
+end
+
+--------------------------------------------------------------
+-- Shared master Timer: throttles ALL position-driven recomputation to a
+-- fixed rate rather than per-control-write, per spec's performance
+-- guardrails. Only sources that actually changed (or are mid-path/
+-- mid-crossfade/live-overridden) get their crosspoints rewritten each tick.
+--------------------------------------------------------------
+local updateTimer = Timer.New()
+local tickInterval = 1 / updateRateHz
+updateTimer.EventHandler = function()
+  AdvancePaths(tickInterval)
+
+  for i = 1, numSources do
+    local ov = override[i]
+    if ov.crossfading then
+      ov.elapsed = ov.elapsed + tickInterval
+      dirtySource[i] = true
+    end
+    if Controls.SourceLiveOverride[i].Boolean then
+      dirtySource[i] = true
+    end
+    if dirtySource[i] then
+      UpdateSourceGains(i)
+      dirtySource[i] = false
+    end
+  end
+end
+updateTimer:Start(tickInterval)
+
+--------------------------------------------------------------
+-- EventHandlers
+--------------------------------------------------------------
+for j = 1, numSpeakers do
+  local function onSpeakerGeometryChanged(_) MarkRoomDirty() end
+  Controls.SpeakerX[j].EventHandler = onSpeakerGeometryChanged
+  Controls.SpeakerY[j].EventHandler = onSpeakerGeometryChanged
+  Controls.SpeakerZ[j].EventHandler = onSpeakerGeometryChanged
+  Controls.SpeakerTrim[j].EventHandler = function(_)
+    for i = 1, numSources do dirtySource[i] = true end
+  end
+end
+
+Controls.RecomputeTriangulation.EventHandler = function(_) RebuildTriangulation() end
+
+for i = 1, numSources do
+  local function markDirty(_) dirtySource[i] = true end
+  Controls.SourceX[i].EventHandler = markDirty
+  Controls.SourceY[i].EventHandler = markDirty
+  Controls.SourceZ[i].EventHandler = markDirty
+  Controls.SourceLevel[i].EventHandler = markDirty
+  Controls.SourceMute[i].EventHandler = markDirty
+  Controls.SourceSpread[i].EventHandler = markDirty
+  Controls.SourceExternalX[i].EventHandler = markDirty
+  Controls.SourceExternalY[i].EventHandler = markDirty
+  Controls.SourceExternalZ[i].EventHandler = markDirty
+  Controls.SourceAutoMode[i].EventHandler = markDirty
+
+  Controls.SourceLiveOverride[i].EventHandler = function(c)
+    dirtySource[i] = true
+    if not c.Boolean then
+      -- Released: don't snap back to the path position -- crossfade into it
+      -- over 300ms starting from wherever the external control left off.
+      override[i].fromPos = { Controls.SourceExternalX[i].Value, Controls.SourceExternalY[i].Value, Controls.SourceExternalZ[i].Value }
+      override[i].elapsed = 0
+      override[i].crossfading = true
+    end
+  end
+
+  Controls.PathPlay[i].EventHandler = function(_)
+    RefreshSourceWaypoints(i)
+    pathState[i].playing = true
+    dirtySource[i] = true
+    UpdatePathStatus(i)
+  end
+  Controls.PathStop[i].EventHandler = function(_)
+    -- Pause, not reset: position and path time hold where they are so a
+    -- later Play resumes smoothly rather than jumping back to waypoint 1.
+    pathState[i].playing = false
+    UpdatePathStatus(i)
+  end
+  Controls.PathLoop[i].EventHandler = function(_) UpdatePathStatus(i) end
+
+  for w = 1, maxWp do
+    local flat = (i - 1) * maxWp + w
+    local function onWaypointChanged(_) RefreshSourceWaypoints(i); UpdatePathStatus(i) end
+    Controls.WaypointX[flat].EventHandler = onWaypointChanged
+    Controls.WaypointY[flat].EventHandler = onWaypointChanged
+    Controls.WaypointZ[flat].EventHandler = onWaypointChanged
+    Controls.WaypointTime[flat].EventHandler = onWaypointChanged
+    Controls.WaypointEase[flat].EventHandler = onWaypointChanged
+    Controls.WaypointActive[flat].EventHandler = onWaypointChanged
+  end
+
+  UpdatePathStatus(i)
+end
+
+--------------------------------------------------------------
+-- Initial triangulation + first gain pass at plugin load.
+--------------------------------------------------------------
+RebuildTriangulation()
+for i = 1, numSources do UpdateSourceGains(i) end
+
+end -- if Controls then
