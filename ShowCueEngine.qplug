@@ -36,6 +36,12 @@
                      time via "+ Add Action" -- rather than showing all
                      cues x actions on screen at once
 
+  Also: a latching E-Stop (Toggle, with a schematic input pin) that can
+  only be cleared with a separate Clear E-Stop button; an optional design-
+  time logo (paste base64 SVG in Properties); and a runtime Light/Dark Mode
+  toggle that re-skins the transport buttons, cue grid, and status LEDs
+  (page/card backgrounds are fixed at design time -- see README).
+
   Only documented Q-SYS Lua extensions are used: UdpSocket, Component,
   Controls, Timer, rapidjson, Ping. See README.md for install/config notes
   and a list of flagged assumptions (search this file for "ASSUMPTION").
@@ -43,7 +49,7 @@
 
 PluginInfo = {
   Name = "Show Control~CueEngine",
-  Version = "1.3.0",
+  Version = "1.4.0",
   Id = "com.yourcompany.showcontrol.cueengine",
   Description = "Live-show cue engine: up to 30 cues, each firing a reorderable, optionally-delayed sequence of actions (player triggers, UDP, named controls, wait, reusable action groups).",
   ShowDebug = true,
@@ -102,6 +108,11 @@ function GetProperties()
     Type = "boolean",
     Value = false,
   })
+  table.insert(props, {
+    Name = "Logo SVG (base64, optional)",
+    Type = "string",
+    Value = "",
+  })
   return props
 end
 
@@ -127,8 +138,14 @@ function GetControls(props)
   -- Transport / global status -------------------------------------------------
   add({ Name = "GoButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
   add({ Name = "StopAllButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
-  add({ Name = "PanicButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
+  -- E-Stop: a latching Toggle (not a momentary Trigger) with a schematic
+  -- input pin so it can be driven from outside the plugin (a hardware
+  -- E-stop relay, another block's logic, etc). Once engaged it can only be
+  -- cleared via ResetPanicButton -- see the runtime EventHandlers below.
+  add({ Name = "PanicButton", ControlType = "Button", ButtonType = "Toggle", Count = 1, UserPin = true, PinStyle = "Input" })
+  add({ Name = "ResetPanicButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
   add({ Name = "ResetShowButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
+  add({ Name = "DarkModeToggle", ControlType = "Button", ButtonType = "Toggle", Count = 1 })
 
   add({ Name = "StatusLed", ControlType = "Indicator", IndicatorType = "Status", Count = 1 })
   add({ Name = "StatusText", ControlType = "Text", Count = 1 })
@@ -326,10 +343,20 @@ function GetControlLayout(props)
 
     -- Transport -----------------------------------------------------------------
     card(M, 162, W - 2 * M, 54, "TRANSPORT")
-    layout["GoButton"] = { PrettyName = "Go", Style = "Button", ButtonStyle = "Trigger", Legend = "GO", Color = Success, CornerRadius = 6, Position = { 28, 178 }, Size = { 120, 30 } }
-    layout["StopAllButton"] = { PrettyName = "Stop All", Style = "Button", ButtonStyle = "Trigger", Legend = "STOP ALL", Color = Warning, CornerRadius = 6, Position = { 160, 178 }, Size = { 140, 30 } }
-    layout["PanicButton"] = { PrettyName = "Panic", Style = "Button", ButtonStyle = "Trigger", Legend = "PANIC", Color = Danger, CornerRadius = 6, Position = { 312, 178 }, Size = { 140, 30 } }
-    layout["ResetShowButton"] = { PrettyName = "Reset Show", Style = "Button", ButtonStyle = "Trigger", Legend = "RESET", Color = { 90, 98, 112 }, CornerRadius = 6, Position = { 464, 178 }, Size = { 110, 30 } }
+    layout["GoButton"] = { PrettyName = "Go", Style = "Button", ButtonStyle = "Trigger", Legend = "GO", Color = Success, CornerRadius = 6, Position = { 28, 178 }, Size = { 100, 30 } }
+    layout["StopAllButton"] = { PrettyName = "Stop All", Style = "Button", ButtonStyle = "Trigger", Legend = "STOP ALL", Color = Warning, CornerRadius = 6, Position = { 138, 178 }, Size = { 110, 30 } }
+    layout["PanicButton"] = {
+      PrettyName = "E-Stop (also has an input pin -- see schematic)", Style = "Button", ButtonStyle = "Toggle",
+      Legend = "E-STOP", Color = Danger, OffColor = { 90, 98, 112 }, CornerRadius = 6,
+      Position = { 258, 178 }, Size = { 112, 30 },
+    }
+    layout["ResetPanicButton"] = { PrettyName = "Clear E-Stop", Style = "Button", ButtonStyle = "Trigger", Legend = "CLEAR E-STOP", Color = { 90, 98, 112 }, CornerRadius = 6, Position = { 380, 178 }, Size = { 118, 30 } }
+    layout["ResetShowButton"] = { PrettyName = "Reset Show", Style = "Button", ButtonStyle = "Trigger", Legend = "RESET", Color = { 90, 98, 112 }, CornerRadius = 6, Position = { 508, 178 }, Size = { 90, 30 } }
+    layout["DarkModeToggle"] = {
+      PrettyName = "Dark Mode (runtime)", Style = "Button", ButtonStyle = "Toggle",
+      Legend = "DARK MODE", Color = { 30, 34, 40 }, OffColor = { 214, 218, 224 }, CornerRadius = 6,
+      Position = { 630, 178 }, Size = { 110, 30 },
+    }
 
     -- Current / Next cue notes -- large read-along text for the operator
     -- ("cue words"). Always reflect the last SUCCESSFULLY fired cue and
@@ -490,9 +517,9 @@ function GetControlLayout(props)
     -- The Global Condition is optional (off by default) and applies to EVERY
     -- cue in addition to any per-cue condition below -- e.g. a single "show
     -- is live" toggle that must be on before anything can fire.
-    card(M, y, W - 2 * M, 82, "GLOBAL SETTINGS")
+    card(M, y, W - 2 * M, 82, "GLOBAL SETTINGS (STOP ALL / E-STOP)")
     layout["GlobalStopControlName"] = { PrettyName = "Player Stop Control Name", Style = "Text", Position = { 28, y + 18 }, Size = { 300, 26 } }
-    layout["PanicUdpPayload"] = { PrettyName = "Panic UDP Payload", Style = "Text", Position = { 344, y + 18 }, Size = { 300, 26 } }
+    layout["PanicUdpPayload"] = { PrettyName = "E-Stop UDP Payload", Style = "Text", Position = { 344, y + 18 }, Size = { 300, 26 } }
     layout["GlobalConditionEnable"] = { PrettyName = "Global Condition~Enable", Style = "Button", ButtonStyle = "Toggle", Legend = "Global Condition", Color = Accent, CornerRadius = 4, Position = { 28, y + 50 }, Size = { 140, 22 } }
     layout["GlobalConditionTarget"] = { PrettyName = "Global Condition~Target (device)", Style = "ComboBox", Position = { 172, y + 50 }, Size = { 150, 22 } }
     layout["GlobalConditionControl"] = { PrettyName = "Global Condition~Control", Style = "ComboBox", Position = { 326, y + 50 }, Size = { 150, 22 } }
@@ -572,6 +599,17 @@ function GetControlLayout(props)
     pageBackground(W, y)
   end
 
+  -- Optional logo, top-right corner of every page. Q-SYS plugin graphics
+  -- are baked in once by GetControlLayout at design time -- there is no
+  -- runtime API for the running plugin to redraw them -- so this is a
+  -- fixed image set once in Designer's Properties panel, not something an
+  -- operator can change live during a show. Paste raw base64 of the SVG's
+  -- XML (no "data:image/svg+xml;base64," prefix). See README for details.
+  local logoValue = props["Logo SVG (base64, optional)"] and props["Logo SVG (base64, optional)"].Value or ""
+  if logoValue ~= "" then
+    graphics[#graphics + 1] = { Type = "Svg", Image = logoValue, Position = { 920 - 16 - 120, 4 }, Size = { 120, 24 } }
+  end
+
   return layout, graphics
 end
 
@@ -596,7 +634,17 @@ local ActionTypeSet = {}
 for _, t in ipairs(ActionTypes) do ActionTypeSet[t] = true end
 
 -- Matches the RGB palette used in GetControlLayout (Accent/Warning/Danger/Success).
-local StateColors = {
+-- Light/Dark Mode (see ApplyColorMode below) mutates StateColors' VALUES in
+-- place at runtime -- every function below reads through this same table,
+-- so nothing needs to be re-wired when the mode changes.
+local function DimHex(hex, factor)
+  local r = tonumber(hex:sub(2, 3), 16)
+  local g = tonumber(hex:sub(4, 5), 16)
+  local b = tonumber(hex:sub(6, 7), 16)
+  return string.format("#%02X%02X%02X", math.floor(r * factor), math.floor(g * factor), math.floor(b * factor))
+end
+
+local LightStateColors = {
   armed = "#2962FF",
   firing = "#D68C14",
   error = "#CE2A33",
@@ -605,6 +653,20 @@ local StateColors = {
   active = "#18A05A", -- the one cue currently "live" (persists until another cue fires)
   played = "#26282D", -- a previously-active cue, dimmed well below idle (#465261) so it reads as "done"
 }
+local DarkStateColors = {}
+for k, v in pairs(LightStateColors) do
+  DarkStateColors[k] = (k == "played") and v or DimHex(v, 0.55) -- "played" is already near-black
+end
+
+local StateColors = {}
+for k, v in pairs(LightStateColors) do StateColors[k] = v end
+
+-- The transport buttons' idle faces aren't state-driven like StateColors,
+-- so they get their own light/dark pair. E-Stop stays vivid red regardless
+-- of mode -- an emergency control should never be dimmed.
+local LightButtonColors = { GoButton = "#18A05A", StopAllButton = "#D68C14", ResetShowButton = "#5A6270", ResetPanicButton = "#5A6270" }
+local DarkButtonColors = {}
+for k, v in pairs(LightButtonColors) do DarkButtonColors[k] = DimHex(v, 0.55) end
 
 -- ----------------------------------------------------------------------------
 -- Forward-declared locals so all runtime functions can freely reference each
@@ -630,6 +692,7 @@ local GroupMoveActionUp, GroupMoveActionDown
 local EvaluateCondition, CheckCueConditions, PopulateConditionControlChoices
 local RefreshConditionEditorVisibility, RefreshGlobalConditionVisibility, PushGlobalConditionToControls
 local RefreshCueNotesDisplays, ResetPlaybackState, ResetShow
+local ApplyColorMode, EngagePanic, ClearPanic
 local Init
 
 -- ----------------------------------------------------------------------------
@@ -656,6 +719,12 @@ local ActiveCueIndex = nil -- the cue whose state=="active"; only advances on a 
 local LastTelemetryUpdate = 0.0
 local Loading = true     -- true while Init()/ApplyShowTable()/SelectCue() are pushing data into
                           -- Controls programmatically, so those writes don't re-trigger edit handlers.
+local PanicEngaged = false -- true once E-Stop has latched; only ClearPanic() may clear it
+local DarkMode = false    -- runtime Light/Dark Mode preference, persisted with the show
+local CurrentStatusKind = "ready" -- "ready"|"firing"|"error"; tracks what StatusLed should show
+                                    -- under whichever palette is active, so ApplyColorMode can
+                                    -- refresh it without re-deriving current show state
+local ErrorActive = false -- tracks what ErrorLed should show (StateColors.error vs .neutral)
 
 local CONFIRM_WINDOW_MS = 2000
 local DEBOUNCE_MS = 150
@@ -1130,6 +1199,7 @@ BuildShowTable = function()
     actionGroups = actionGroupsOut,
     udpTargets = udpOut,
     globalCondition = { enabled = GlobalCondition.enabled, target = GlobalCondition.target, control = GlobalCondition.control, required = GlobalCondition.required },
+    darkMode = DarkMode,
   }
 end
 
@@ -1273,6 +1343,9 @@ ApplyShowTable = function(data)
   RefreshSelectedGroupChoices()
   SelectedGroupIndex = 1
   PushSelectedGroupToEditor()
+  local dm = data.darkMode and true or false
+  pcall(function() Controls.DarkModeToggle.Boolean = dm end)
+  ApplyColorMode(dm)
   Loading = wasLoading
 end
 
@@ -1624,6 +1697,7 @@ MarkDirty = function()
 end
 
 SetStatusMessage = function(msg)
+  CurrentStatusKind = "ready"
   pcall(function()
     Controls.StatusStateText.String = "Ready"
     Controls.StatusLed.Color = StateColors.ready
@@ -1631,6 +1705,8 @@ SetStatusMessage = function(msg)
 end
 
 SetError = function(msg)
+  CurrentStatusKind = "error"
+  ErrorActive = true
   pcall(function()
     Controls.ErrorText.String = msg
     Controls.ErrorLed.Color = StateColors.error
@@ -1716,6 +1792,8 @@ ResetPlaybackState = function()
   CurrentCueIndex = 0
   NextCueIndex = 1
   PendingConfirm = {}
+  CurrentStatusKind = "ready"
+  ErrorActive = false
   pcall(function()
     Controls.StatusStateText.String = "Ready"
     Controls.StatusText.String = "No cue fired yet"
@@ -1738,6 +1816,85 @@ ResetShow = function()
   while #CueLog > CUE_LOG_MAX do table.remove(CueLog) end
   pcall(function() Controls.CueLogText.String = table.concat(CueLog, "\n") end)
   if DebugOn then print("[CueEngine] Show reset") end
+end
+
+--=============================================================================
+-- E-Stop (latching panic): engaged by PanicButton going true (from the UI
+-- OR its schematic input pin), and -- deliberately -- can only be cleared
+-- by ResetPanicButton. Neither the UI nor the pin can clear it directly;
+-- see the PanicButton EventHandler below, which forces the control back to
+-- true if anything but ClearPanic() tries to drop it.
+--=============================================================================
+EngagePanic = function()
+  PanicEngaged = true
+  local errs = StopAllPlayers()
+  local payload = Controls.PanicUdpPayload.String
+  if payload ~= "" then
+    for i = 1, NumUdp do
+      if UdpSockets[i] then
+        local ok, err = pcall(function() UdpSockets[i]:Send(UdpTargets[i].ip, UdpTargets[i].port, payload) end)
+        if not ok then table.insert(errs, string.format("UDP %s: %s", UdpTargets[i].name, tostring(err))) end
+      end
+    end
+  end
+  -- Same "halt in place, don't rewind" semantics as the old momentary Panic
+  -- button: clears active/played highlighting but leaves Current/NextCueIndex
+  -- untouched. Also stops any cue currently mid-"wait" so nothing queued
+  -- fires late.
+  CancelAllPendingWaits()
+  for i = 1, MaxCues do
+    Cues[i].state = "idle"
+    RefreshCueButtonColor(i)
+  end
+  ActiveCueIndex = nil
+  local wasLoading = Loading
+  Loading = true
+  pcall(function() Controls.PanicButton.Boolean = true end)
+  Loading = wasLoading
+  if #errs > 0 then
+    SetError("E-STOP errors: " .. table.concat(errs, " | "))
+  else
+    SetError("E-STOP engaged - safe state sent. Use CLEAR E-STOP to resume.")
+  end
+end
+
+ClearPanic = function()
+  if not PanicEngaged then return end
+  PanicEngaged = false
+  local wasLoading = Loading
+  Loading = true
+  pcall(function() Controls.PanicButton.Boolean = false end)
+  Loading = wasLoading
+  SetStatusMessage("E-Stop cleared")
+  pcall(function() Controls.ErrorText.String = "" end)
+  ErrorActive = false
+  pcall(function() Controls.ErrorLed.Color = StateColors.neutral end)
+end
+
+--=============================================================================
+-- Light/Dark Mode (runtime)
+-- Q-SYS plugin graphics (card/page backgrounds, borders) are baked in once
+-- by GetControlLayout at design time -- there is no documented runtime API
+-- to redraw them. So this genuinely re-skins every real Control (transport
+-- buttons, the cue grid, status/error LEDs) but cannot repaint the card or
+-- page backgrounds themselves. See README for the exact scope.
+--=============================================================================
+ApplyColorMode = function(isDark)
+  DarkMode = isDark and true or false
+  local stateSrc = DarkMode and DarkStateColors or LightStateColors
+  for k, v in pairs(stateSrc) do StateColors[k] = v end
+  local btnSrc = DarkMode and DarkButtonColors or LightButtonColors
+  pcall(function()
+    Controls.GoButton.Color = btnSrc.GoButton
+    Controls.StopAllButton.Color = btnSrc.StopAllButton
+    Controls.ResetShowButton.Color = btnSrc.ResetShowButton
+    Controls.ResetPanicButton.Color = btnSrc.ResetPanicButton
+  end)
+  for i = 1, MaxCues do RefreshCueButtonColor(i) end
+  pcall(function()
+    Controls.StatusLed.Color = StateColors[CurrentStatusKind] or StateColors.ready
+    Controls.ErrorLed.Color = ErrorActive and StateColors.error or StateColors.neutral
+  end)
 end
 
 --=============================================================================
@@ -1978,6 +2135,7 @@ FireCueNow = function(i)
   cue.firing = true
   cue.state = "firing"
   RefreshCueButtonColor(i)
+  CurrentStatusKind = "firing"
   pcall(function()
     Controls.StatusStateText.String = "Firing"
     Controls.StatusLed.Color = StateColors.firing
@@ -1988,6 +2146,11 @@ FireCueNow = function(i)
 end
 
 OnCueButtonPressed = function(i)
+  if PanicEngaged then
+    SetError(string.format("Cue %d blocked: E-Stop engaged", i))
+    LogCueFire(i, false, "E-STOP")
+    return
+  end
   local condOk, condReason = CheckCueConditions(i)
   if not condOk then
     SetError(string.format("Cue %d blocked: %s", i, condReason))
@@ -2084,36 +2247,37 @@ Controls.StopAllButton.EventHandler = function()
   end
 end
 
-Controls.PanicButton.EventHandler = function()
-  local errs = StopAllPlayers()
-  local payload = Controls.PanicUdpPayload.String
-  if payload ~= "" then
-    for i = 1, NumUdp do
-      if UdpSockets[i] then
-        local ok, err = pcall(function() UdpSockets[i]:Send(UdpTargets[i].ip, UdpTargets[i].port, payload) end)
-        if not ok then table.insert(errs, string.format("UDP %s: %s", UdpTargets[i].name, tostring(err))) end
-      end
-    end
+-- Fires on ANY change to PanicButton.Boolean -- a UI click, or its schematic
+-- input pin being driven externally. Going true engages E-Stop; going false
+-- is only honored when it's ClearPanic() making that change (guarded by
+-- Loading there) -- any other attempt to clear it (UI or pin) is rejected
+-- and the control is forced straight back to true.
+Controls.PanicButton.EventHandler = function(ctl)
+  if Loading then return end
+  if ctl.Boolean then
+    EngagePanic()
+  elseif PanicEngaged then
+    local wasLoading = Loading
+    Loading = true
+    pcall(function() Controls.PanicButton.Boolean = true end)
+    Loading = wasLoading
+    SetError("E-Stop is latched - use CLEAR E-STOP to resume.")
   end
-  -- Clears the active/played highlighting (visual stop) but deliberately
-  -- does NOT touch Current/NextCueIndex -- PANIC is an emergency halt in
-  -- place, not a rewind. Use Reset Show to actually restart the show.
-  -- Also stops any cue currently mid-"wait" so nothing queued fires late.
-  CancelAllPendingWaits()
-  for i = 1, MaxCues do
-    Cues[i].state = "idle"
-    RefreshCueButtonColor(i)
-  end
-  ActiveCueIndex = nil
-  if #errs > 0 then
-    SetError("PANIC errors: " .. table.concat(errs, " | "))
-  else
-    SetStatusMessage("PANIC executed - safe state sent")
-  end
+end
+
+Controls.ResetPanicButton.EventHandler = function()
+  ClearPanic()
 end
 
 Controls.ResetShowButton.EventHandler = function()
   ResetShow()
+end
+
+Controls.DarkModeToggle.EventHandler = function(ctl)
+  if Loading then return end
+  ApplyColorMode(ctl.Boolean)
+  MarkDirty()
+  SaveShowData()
 end
 
 Controls.LockToggle.EventHandler = function() end -- pure UI state; read directly where needed
@@ -2543,6 +2707,21 @@ Init = function()
   -- Current/Next Cue Notes views in one place (also already run once inside
   -- ApplyShowTable for the `loaded` path -- idempotent, harmless to repeat).
   ResetPlaybackState()
+
+  -- E-Stop state is NOT persisted (a fresh boot always starts un-latched,
+  -- like a physical E-stop relay) -- but if the schematic input pin is
+  -- already being held true at boot (e.g. a hard-wired E-stop upstream),
+  -- honor it immediately rather than silently ignoring it.
+  if Controls.PanicButton.Boolean then
+    EngagePanic()
+  else
+    PanicEngaged = false
+  end
+
+  -- Also already applied once inside ApplyShowTable for the `loaded` path --
+  -- idempotent, harmless to repeat, and covers the fresh-boot (unloaded) path.
+  pcall(function() Controls.DarkModeToggle.Boolean = DarkMode end)
+  ApplyColorMode(DarkMode)
   pcall(function() Controls.UnsavedLed.Color = StateColors.neutral end)
 
   StartPingHeartbeat()

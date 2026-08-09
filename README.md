@@ -27,9 +27,10 @@ The component has four pages (visible as tabs at the top of its
 properties/control panel in Designer):
 
 - **Live Show** — the compact operator view: show/lock strip, status bar,
-  GO/STOP ALL/PANIC/RESET transport, large Current/Next Cue Notes ("cue
-  words") views, the quick-fire cue grid, and a live activity log. Sized to
-  fit comfortably on one screen (~920px wide).
+  GO / STOP ALL / **E-STOP** / **CLEAR E-STOP** / RESET / **DARK MODE**
+  transport, large Current/Next Cue Notes ("cue words") views, the
+  quick-fire cue grid, and a live activity log. Sized to fit comfortably on
+  one screen (~920px wide).
 - **Devices** — a curated list of Q-SYS components ("Devices") and UDP
   targets. This is the only place the full, raw list of every component in
   your design is shown; everywhere else (the Show Editor's/Action Groups'
@@ -63,6 +64,7 @@ with card-style grouped sections and section headings.
 | **Max Action Groups** | Number of reusable Action Groups | 8 | 0–24 |
 | **UDP Targets** | Number of configurable UDP devices | 6 | 0–12 |
 | **Show Debug** | Show the Lua debug window; also gates `print()` mirroring of errors/cue-fire log lines | false | — |
+| **Logo SVG (base64, optional)** | Raw base64 of an SVG's XML, rendered top-right on every page. Empty = no logo. Design-time only — see "Optional logo" below | "" (empty) | — |
 
 Changing any of these **resizes the control set** (`GetControls` declares a
 static, fixed-size set of controls sized only from these Properties — the
@@ -165,7 +167,7 @@ cue (see below) until every action — including everything after the last
 `wait` — has actually dispatched. Firing the *same* cue again while its own
 `wait` is still pending is ignored (it's still mid-sequence); firing a
 *different* cue in the meantime works normally, since each cue's wait state
-is independent. **PANIC**, **STOP ALL**, and **RESET** all cancel any cue
+is independent. **E-STOP**, **STOP ALL**, and **RESET** all cancel any cue
 currently mid-`wait` — its queued remaining actions never fire, and it's
 logged as `CANCELLED` in the Activity Log — so a delayed action can never
 sneak out after you've told the show to stop or start over.
@@ -223,19 +225,22 @@ grid or **GO**) — they read the referenced control's actual current
 `.Boolean` state at that moment, not a cached or stored value. A cue
 blocked by a condition doesn't fire any of its actions, doesn't count
 toward the 150ms debounce, and logs as `BLOCKED` (not `OK`/`ERROR`) with
-the specific reason shown in the status bar's error field. **PANIC** and
+the specific reason shown in the status bar's error field. **E-STOP** and
 **STOP ALL** always bypass conditions entirely, same as they bypass the
-normal cue path — they're an emergency override by design.
+normal cue path — they're an emergency override by design. While **E-STOP**
+is engaged, no cue can fire at all (GO or the grid) — see "E-Stop (Emergency
+Stop)" below.
 
 **GO** (Live Show page) fires the "next cue" shown in the status bar and
 advances it. **STOP ALL** triggers the control named in **Player Stop
 Control Name** (Show Editor page, default `stop`) on every component
-referenced anywhere in the show, and cancels any cue mid-`wait`. **PANIC**
-does the same and, if **Panic UDP Payload** is non-empty, sends that
+referenced anywhere in the show, and cancels any cue mid-`wait`. **E-STOP**
+does the same and, if **E-Stop UDP Payload** is non-empty, sends that
 payload to every configured UDP target — bypassing the normal cue path
 entirely, and clears the grid's active/played coloring (but does **not**
 rewind the show position — it's a halt-in-place, not a restart; use
-**RESET** for that).
+**RESET** for that). Unlike the old momentary Panic button, **E-STOP now
+latches** — see the next section.
 
 ### One active cue, played cues greyed out
 
@@ -259,7 +264,7 @@ GO/retry re-targets the same failed cue instead of silently skipping past
 it. Conditions (see above) work the same way: a cue blocked by a condition
 doesn't touch the active cue either.
 
-**RESET** (Live Show page, next to PANIC) rewinds *playback position only* —
+**RESET** (Live Show page, next to E-STOP) rewinds *playback position only* —
 every cue's active/played/error coloring clears back to idle/armed, Current
 Cue and Next Cue reset to "none" / cue 1, and the status bar goes back to
 "No cue fired yet". It does **not** touch anything you've authored (cue
@@ -277,6 +282,72 @@ straight off the Live Show page while running the show. Like the rest of
 the "current cue" concept, these always reflect the last cue to
 *successfully* fire, not a failed attempt, and update live if you edit a
 cue's notes while it happens to be the current or next cue.
+
+### E-Stop (Emergency Stop)
+
+The old momentary **PANIC** button is now **E-STOP**, a latching Toggle
+control that also exposes a **schematic input pin** (visible on the
+component's block in the design canvas) so it can be driven by something
+outside the plugin entirely — a hardware E-stop relay wired through a
+digital I/O card, another block's logic, a global "kill" signal, etc.
+
+- **Engaging**: E-STOP going `true` — from the UI button *or* the input
+  pin, it's the same code path either way — immediately triggers **Player
+  Stop Control Name** on every referenced component, sends **E-Stop UDP
+  Payload** (if set) to every configured UDP target, cancels any cue
+  mid-`wait`, and clears the grid's active/played coloring. The status bar
+  shows **Error** with an "E-STOP engaged" message until cleared.
+- **Clearing**: only the separate **CLEAR E-STOP** button can release it.
+  Flipping the E-STOP control back to `false` any other way — clicking it
+  again in the UI, or the input pin dropping — is **rejected**: the plugin
+  immediately forces it back to `true` and logs that it's latched. This is
+  deliberate, matching how a physical E-stop button/relay behaves — it
+  can't be un-pressed by accident, only explicitly cleared.
+- **While engaged**, no cue can fire — GO and every cue-grid button are
+  blocked and log `E-STOP` in the Activity Log, until CLEAR E-STOP is
+  pressed. STOP ALL and RESET still work while E-STOP is engaged (they
+  don't fire anything).
+- **On boot**, the latch itself is **not** persisted (a fresh boot always
+  starts un-latched, like a physical E-stop relay resetting with power) —
+  but if the input pin is already being held `true` at boot (e.g. a
+  hard-wired E-stop upstream), the plugin honors it immediately rather than
+  silently ignoring it.
+
+### Optional logo
+
+**Logo SVG (base64, optional)** (a Property, not a runtime control) renders
+a small image in the top-right corner of every page. Paste the **raw
+base64 of your SVG file's XML** — no `data:image/svg+xml;base64,` prefix,
+just the base64 text itself. Leave it empty (the default) for no logo.
+
+This is a **design-time-only** feature: Q-SYS plugin graphics (the card
+backgrounds, borders, and this logo image) are baked in once when Designer
+runs `GetControlLayout(props)` — there is no documented Lua API for a
+running plugin to redraw its own graphics. So the logo is something you set
+once in the Properties panel while building the show, not something an
+operator swaps live during a performance. Changing it requires editing the
+Property in Designer (which re-runs `GetControlLayout` and updates it), the
+same as changing any other Property.
+
+### Light / Dark Mode
+
+**DARK MODE** (Live Show page, transport row) is a runtime toggle that
+re-skins the actual **Controls** it can reach: the transport buttons (GO,
+STOP ALL, RESET, CLEAR E-STOP), the cue grid's state colors (armed/active/
+played/error/firing), and the status/error LEDs. E-STOP itself stays vivid
+red regardless of mode — an emergency control shouldn't be dimmed. The
+preference is remembered with the rest of the show (export/import and the
+persisted `ShowData` both carry it) and re-applied on the next boot.
+
+**This is not a full theme swap.** The same hard constraint that makes the
+logo design-time-only also caps Dark Mode's scope: the page and card
+backgrounds (white cards, light-grey page background) are baked in by
+`GetControlLayout` at design time and **cannot be repainted at runtime** —
+there's no Lua API for a running plugin to redraw its own graphics. Dark
+Mode is a genuine, working brightness toggle for the controls an operator
+actually watches (the cue grid, transport, status), not a dark canvas
+behind them. If you need a fully dark canvas, that requires a different
+Designer-side skin/theme, outside what a plugin's Lua runtime can control.
 
 ## Testing UDP sending
 
@@ -330,6 +401,10 @@ in emulation.
 > (defined on the Devices page), not a raw Q-SYS component name. A show
 > exported from an earlier build of this plugin will need its action
 > targets renamed to match configured Device names before re-importing.
+> The schema also now carries `actionGroups` (reusable Action Groups) and
+> `darkMode` (the Light/Dark Mode preference) — both are optional on
+> import: a show exported before either feature existed imports fine
+> without them (no groups, Light Mode).
 
 ## Reliability notes
 
@@ -361,6 +436,16 @@ in emulation.
   group's actions exactly as they do to a cue's own, with no separate code
   path to keep in sync. A hard recursion-depth cap backstops the explicit
   circular-reference guard.
+- E-STOP's "only Clear E-Stop can release it" behavior is enforced in the
+  control's own `EventHandler`, not just in the UI: if anything drives the
+  underlying control back to `false` — the input pin, a script, a stray
+  click — the plugin immediately writes it back to `true` (guarded against
+  re-entrant handling) and logs that it's latched, so the safety property
+  holds regardless of what's driving the control.
+- Dark Mode mutates one shared `StateColors` table's *values* in place
+  rather than swapping which table every function reads from, so every
+  existing color reference (cue grid, status LEDs, etc.) automatically
+  picks up the new palette with no per-callsite changes.
 
 ## Assumptions flagged for review
 
@@ -400,6 +485,23 @@ specified:
    `StartPingHeartbeat` in the plugin source, and verify against your
    installed Designer version if UDP target status doesn't show
    Reachable/Unreachable as expected.
+4. **Plugin graphics cannot be redrawn at runtime**: there is no documented
+   Lua API for a running plugin to repaint the card/page backgrounds
+   `GetControlLayout` draws at design time. This shapes both newer features:
+   the optional logo is necessarily a design-time-only Property (see
+   "Optional logo"), and Dark Mode necessarily only re-skins actual
+   `Controls` (transport buttons, cue grid, status LEDs) rather than the
+   page/card backgrounds themselves (see "Light / Dark Mode"). If a future
+   Designer/Lua release adds a runtime graphics API, both could be extended
+   to cover backgrounds too.
+5. **E-Stop pin semantics**: `UserPin = true, PinStyle = "Input"` on
+   `PanicButton` is the confirmed syntax for exposing a schematic input pin
+   on a Boolean Toggle control, but the exact behavior of an external pin
+   write arriving while the plugin's own script is mid-write to that same
+   control (a race, in principle) couldn't be verified outside Designer.
+   The `Loading`-guarded re-latch logic is defensive against that, but
+   verify the E-Stop pin's behavior against real upstream hardware before
+   relying on it for life-safety-adjacent use.
 
 ## Validation performed
 
@@ -455,6 +557,19 @@ nonexistent group both fail the triggering cue with a specific error
 instead of hanging, looping, or crashing; and groups round-trip through
 export/import. The layout check also confirms every declared control
 appears on exactly one of the four pages (never more than one, never
-zero, except the intentionally-hidden `ShowData`). It has **not** been
-run inside actual Q-SYS Designer or against real hardware — do that
-before a live show, per the persistence note above.
+zero, except the intentionally-hidden `ShowData`).
+
+E-Stop is checked end-to-end too: engaging it (via the same control write
+a UI click or the input pin would produce) blocks cue firing with a clear
+log entry; attempting to clear it any way other than the dedicated Clear
+E-Stop button is confirmed to force the control straight back to engaged;
+Clear E-Stop is confirmed to actually release the latch and let cues fire
+normally again; and it's confirmed to cancel a cue's pending `wait`, same
+as the old Panic button did. Dark Mode is checked to actually change the
+transport buttons' `.Color` at runtime, restore the original color when
+toggled back off, and round-trip its on/off state (and the resulting
+colors) through export/import.
+
+It has **not** been run inside actual Q-SYS Designer or against real
+hardware — do that before a live show, per the persistence note above,
+and per the E-Stop pin caveat in "Assumptions flagged for review".
