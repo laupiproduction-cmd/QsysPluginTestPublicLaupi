@@ -103,6 +103,7 @@ function GetControls(props)
   add({ Name = "GoButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
   add({ Name = "StopAllButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
   add({ Name = "PanicButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
+  add({ Name = "ResetShowButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
 
   add({ Name = "StatusLed", ControlType = "Indicator", IndicatorType = "Status", Count = 1 })
   add({ Name = "StatusText", ControlType = "Text", Count = 1 })
@@ -110,6 +111,8 @@ function GetControls(props)
   add({ Name = "NextCueText", ControlType = "Text", Count = 1 })
   add({ Name = "ErrorLed", ControlType = "Indicator", IndicatorType = "Status", Count = 1 })
   add({ Name = "ErrorText", ControlType = "Text", Count = 1 })
+  add({ Name = "CurrentCueNotesText", ControlType = "Text", Count = 1 })
+  add({ Name = "NextCueNotesText", ControlType = "Text", Count = 1 })
 
   add({ Name = "ShowNameText", ControlType = "Text", Count = 1 })
   add({ Name = "LastModifiedText", ControlType = "Text", Count = 1 })
@@ -279,7 +282,19 @@ function GetControlLayout(props)
     layout["GoButton"] = { PrettyName = "Go", Style = "Button", ButtonStyle = "Trigger", Legend = "GO", Color = Success, CornerRadius = 6, Position = { 28, 178 }, Size = { 120, 30 } }
     layout["StopAllButton"] = { PrettyName = "Stop All", Style = "Button", ButtonStyle = "Trigger", Legend = "STOP ALL", Color = Warning, CornerRadius = 6, Position = { 160, 178 }, Size = { 140, 30 } }
     layout["PanicButton"] = { PrettyName = "Panic", Style = "Button", ButtonStyle = "Trigger", Legend = "PANIC", Color = Danger, CornerRadius = 6, Position = { 312, 178 }, Size = { 140, 30 } }
-    graphics[#graphics + 1] = { Type = "Text", Text = "Panic uses the Player Stop Control Name and Panic UDP Payload configured on the Show Editor page.", FontSize = 8, Position = { 470, 186 }, Size = { 420, 14 } }
+    layout["ResetShowButton"] = { PrettyName = "Reset Show", Style = "Button", ButtonStyle = "Trigger", Legend = "RESET", Color = { 90, 98, 112 }, CornerRadius = 6, Position = { 464, 178 }, Size = { 110, 30 } }
+
+    -- Current / Next cue notes -- large read-along text for the operator
+    -- ("cue words"). Always reflect the last SUCCESSFULLY fired cue and
+    -- what's after it, same as the small status-bar Next Cue field.
+    local notesY = 162 + 54 + 12
+    local notesH = 90
+    local notesHalfW = (W - 2 * M - 12) / 2
+    card(M, notesY, notesHalfW, notesH, "CURRENT CUE NOTES")
+    layout["CurrentCueNotesText"] = { PrettyName = "Current Cue Notes", Style = "TextBox", Position = { M + 14, notesY + 22 }, Size = { notesHalfW - 28, notesH - 36 } }
+    local notes2X = M + notesHalfW + 12
+    card(notes2X, notesY, notesHalfW, notesH, "NEXT CUE NOTES")
+    layout["NextCueNotesText"] = { PrettyName = "Next Cue Notes", Style = "TextBox", Position = { notes2X + 14, notesY + 22 }, Size = { notesHalfW - 28, notesH - 36 } }
 
     -- Cue grid (quick-fire) + activity log side-by-side ------------------------
     local gridCols = 6
@@ -287,7 +302,7 @@ function GetControlLayout(props)
     local gridRows = math.ceil(maxCues / gridCols)
     local gridInnerW = gridCols * cellW + (gridCols - 1) * gap
     local gridInnerH = gridRows * cellH + (gridRows - 1) * gap
-    local gridCardX, gridCardY = M, 230
+    local gridCardX, gridCardY = M, notesY + notesH + 12
     local gridCardW = gridInnerW + 28
     local gridCardH = gridInnerH + 44
     card(gridCardX, gridCardY, gridCardW, gridCardH, "CUES  (tap to fire)")
@@ -477,6 +492,8 @@ local StateColors = {
   error = "#CE2A33",
   ready = "#18A05A",
   neutral = "#6E7680",
+  active = "#18A05A", -- the one cue currently "live" (persists until another cue fires)
+  played = "#5A5F66", -- a previously-active cue, greyed out once superseded
 }
 
 -- ----------------------------------------------------------------------------
@@ -496,6 +513,7 @@ local SetStatusMessage, SetError, UpdateStatus, LogCueFire
 local FireCueNow, OnCueButtonPressed, StopAllPlayers, StartPingHeartbeat, CallAfter
 local EvaluateCondition, CheckCueConditions, PopulateConditionControlChoices
 local RefreshConditionEditorVisibility, RefreshGlobalConditionVisibility, PushGlobalConditionToControls
+local RefreshCueNotesDisplays, ResetPlaybackState, ResetShow
 local Init
 
 -- ----------------------------------------------------------------------------
@@ -516,6 +534,7 @@ local CueLog = {}        -- most-recent-first array of log line strings
 local SelectedCueIndex = 1
 local CurrentCueIndex = 0
 local NextCueIndex = 1
+local ActiveCueIndex = nil -- the cue whose state=="active"; only advances on a SUCCESSFUL fire
 local LastTelemetryUpdate = 0.0
 local Loading = true     -- true while Init()/ApplyShowTable()/SelectCue() are pushing data into
                           -- Controls programmatically, so those writes don't re-trigger edit handlers.
@@ -981,7 +1000,10 @@ ApplyShowTable = function(data)
   local wasLoading = Loading
   Loading = true
   PushGlobalConditionToControls()
-  for i = 1, MaxCues do RefreshCueButtonColor(i) end
+  -- Reset playback position too: an imported/reloaded show shouldn't carry
+  -- over stale active/played highlighting or current/next pointers from
+  -- whatever was showing before.
+  ResetPlaybackState()
   RefreshSelectedCueChoices()
   SelectedCueIndex = 1
   PushSelectedCueToEditor()
@@ -1159,11 +1181,19 @@ end
 --=============================================================================
 -- UI feedback
 --=============================================================================
+-- Color precedence: a transient "firing" flash beats everything; a failed
+-- fire's "error" red persists until the next attempt on that cue; the one
+-- "active" cue (the last cue to successfully fire -- there is only ever one)
+-- gets a distinct highlight; a cue that WAS active but has since been
+-- superseded shows greyed out as "played"; an as-yet-unplayed Armed cue
+-- shows its arm color; anything else uses its own idle color.
 RefreshCueButtonColor = function(i)
   local c = Cues[i]
   local color = c.color
   if c.state == "firing" then color = StateColors.firing
   elseif c.state == "error" then color = StateColors.error
+  elseif c.state == "active" then color = StateColors.active
+  elseif c.state == "played" then color = StateColors.played
   elseif c.armed then color = StateColors.armed
   end
   pcall(function()
@@ -1197,6 +1227,25 @@ SetError = function(msg)
   if DebugOn then print("[CueEngine][ERROR] " .. tostring(msg)) end
 end
 
+-- The two big Live Show "cue words" text views always reflect CurrentCueIndex
+-- / NextCueIndex (the last SUCCESSFULLY fired cue and what's after it) --
+-- never the just-attempted cue, so a failed fire doesn't blank out or
+-- overwrite what the operator is currently reading off the previous cue.
+RefreshCueNotesDisplays = function()
+  pcall(function()
+    if CurrentCueIndex >= 1 and CurrentCueIndex <= MaxCues then
+      Controls.CurrentCueNotesText.String = Cues[CurrentCueIndex].notes
+    else
+      Controls.CurrentCueNotesText.String = ""
+    end
+    if NextCueIndex >= 1 and NextCueIndex <= MaxCues then
+      Controls.NextCueNotesText.String = Cues[NextCueIndex].notes
+    else
+      Controls.NextCueNotesText.String = ""
+    end
+  end)
+end
+
 UpdateStatus = function(i)
   pcall(function()
     Controls.StatusText.String = string.format("Cue %d: %s", i, Cues[i].name)
@@ -1206,6 +1255,7 @@ UpdateStatus = function(i)
       Controls.NextCueText.String = "Next: End of Show"
     end
   end)
+  RefreshCueNotesDisplays()
 end
 
 LogCueFire = function(i, success, statusLabel)
@@ -1215,6 +1265,43 @@ LogCueFire = function(i, success, statusLabel)
   while #CueLog > CUE_LOG_MAX do table.remove(CueLog) end
   pcall(function() Controls.CueLogText.String = table.concat(CueLog, "\n") end)
   if DebugOn then print("[CueEngine] " .. line) end
+end
+
+-- Rewinds playback POSITION (which cue is active/played, current/next
+-- pointers, status bar) without touching the authored show itself (cues,
+-- actions, devices, UDP targets are all untouched). Shared by Init/Import
+-- (silent) and the explicit Reset Show button (which also logs it).
+ResetPlaybackState = function()
+  for i = 1, MaxCues do
+    Cues[i].state = "idle"
+    RefreshCueButtonColor(i)
+  end
+  ActiveCueIndex = nil
+  CurrentCueIndex = 0
+  NextCueIndex = 1
+  PendingConfirm = {}
+  pcall(function()
+    Controls.StatusStateText.String = "Ready"
+    Controls.StatusText.String = "No cue fired yet"
+    Controls.StatusLed.Color = StateColors.ready
+    Controls.ErrorText.String = ""
+    Controls.ErrorLed.Color = StateColors.neutral
+    if MaxCues >= 1 then
+      Controls.NextCueText.String = string.format("Next: %d: %s", NextCueIndex, Cues[NextCueIndex].name)
+    end
+  end)
+  RefreshCueNotesDisplays()
+end
+
+-- The operator-facing "Reset Show" button: rewind playback to the top, same
+-- as ResetPlaybackState, plus a marker in the activity log so the reset is
+-- visible in the show's history rather than silently disappearing.
+ResetShow = function()
+  ResetPlaybackState()
+  table.insert(CueLog, 1, string.format("%s  --- Show Reset ---", os.date("%H:%M:%S")))
+  while #CueLog > CUE_LOG_MAX do table.remove(CueLog) end
+  pcall(function() Controls.CueLogText.String = table.concat(CueLog, "\n") end)
+  if DebugOn then print("[CueEngine] Show reset") end
 end
 
 --=============================================================================
@@ -1345,8 +1432,6 @@ FireCueNow = function(i)
   LastFireTime[i] = now
 
   local cue = Cues[i]
-  CurrentCueIndex = i
-  NextCueIndex = math.min(i + 1, MaxCues)
   cue.state = "firing"
   RefreshCueButtonColor(i)
   pcall(function()
@@ -1366,10 +1451,24 @@ FireCueNow = function(i)
   end
 
   if #errors > 0 then
+    -- A failed fire never becomes the new active cue -- the show stays
+    -- sitting on whichever cue last succeeded, and Current/NextCueIndex
+    -- (and the GO target) are left untouched so a retry re-targets the
+    -- same cue rather than silently skipping past it.
     cue.state = "error"
     SetError(string.format("Cue %d: %s", i, table.concat(errors, " | ")))
   else
-    cue.state = cue.armed and "armed" or "idle"
+    -- There is only ever ONE active cue: demote whatever was active before
+    -- (if anything) to "played" (greyed out) now that this one has taken
+    -- over.
+    if ActiveCueIndex and ActiveCueIndex ~= i and Cues[ActiveCueIndex].state == "active" then
+      Cues[ActiveCueIndex].state = "played"
+      RefreshCueButtonColor(ActiveCueIndex)
+    end
+    ActiveCueIndex = i
+    cue.state = "active"
+    CurrentCueIndex = i
+    NextCueIndex = math.min(i + 1, MaxCues)
     SetStatusMessage(string.format("Fired cue %d: %s", i, cue.name))
   end
   RefreshCueButtonColor(i)
@@ -1484,15 +1583,23 @@ Controls.PanicButton.EventHandler = function()
       end
     end
   end
+  -- Clears the active/played highlighting (visual stop) but deliberately
+  -- does NOT touch Current/NextCueIndex -- PANIC is an emergency halt in
+  -- place, not a rewind. Use Reset Show to actually restart the show.
   for i = 1, MaxCues do
     Cues[i].state = "idle"
     RefreshCueButtonColor(i)
   end
+  ActiveCueIndex = nil
   if #errs > 0 then
     SetError("PANIC errors: " .. table.concat(errs, " | "))
   else
     SetStatusMessage("PANIC executed - safe state sent")
   end
+end
+
+Controls.ResetShowButton.EventHandler = function()
+  ResetShow()
 end
 
 Controls.LockToggle.EventHandler = function() end -- pure UI state; read directly where needed
@@ -1552,6 +1659,7 @@ Controls.CueEditNotes.EventHandler = function(ctl)
   if Loading then return end
   if Controls.LockToggle.Boolean then ctl.String = Cues[SelectedCueIndex].notes; return end
   Cues[SelectedCueIndex].notes = ctl.String
+  RefreshCueNotesDisplays() -- keep the Live Show notes views in sync if this is the current/next cue
   MarkDirty(); SaveShowData()
 end
 
@@ -1778,7 +1886,6 @@ Init = function()
     end
     for i = 1, NumUdp do PushUdpTargetToControls(i) end
     PushGlobalConditionToControls()
-    for i = 1, MaxCues do RefreshCueButtonColor(i) end
     RefreshSelectedCueChoices()
     SelectedCueIndex = 1
     PushSelectedCueToEditor()
@@ -1792,16 +1899,11 @@ Init = function()
   RebuildComponentCache()
   for i = 1, NumUdp do OpenUdpSocket(i) end
 
-  pcall(function()
-    Controls.StatusStateText.String = "Ready"
-    Controls.StatusText.String = "No cue fired yet"
-    Controls.StatusLed.Color = StateColors.ready
-    Controls.ErrorLed.Color = StateColors.neutral
-    Controls.UnsavedLed.Color = StateColors.neutral
-    if MaxCues >= 1 then
-      Controls.NextCueText.String = string.format("Next: %d: %s", NextCueIndex, Cues[NextCueIndex].name)
-    end
-  end)
+  -- Covers cue button colors, Current/NextCueIndex, the status bar, and the
+  -- Current/Next Cue Notes views in one place (also already run once inside
+  -- ApplyShowTable for the `loaded` path -- idempotent, harmless to repeat).
+  ResetPlaybackState()
+  pcall(function() Controls.UnsavedLed.Color = StateColors.neutral end)
 
   StartPingHeartbeat()
 

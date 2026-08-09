@@ -24,8 +24,9 @@ The component has three pages (visible as tabs at the top of its
 properties/control panel in Designer):
 
 - **Live Show** — the compact operator view: show/lock strip, status bar,
-  GO/STOP ALL/PANIC transport, the quick-fire cue grid, and a live activity
-  log. Sized to fit comfortably on one screen (~920px wide).
+  GO/STOP ALL/PANIC/RESET transport, large Current/Next Cue Notes ("cue
+  words") views, the quick-fire cue grid, and a live activity log. Sized to
+  fit comfortably on one screen (~920px wide).
 - **Devices** — a curated list of Q-SYS components ("Devices") and UDP
   targets. This is the only place the full, raw list of every component in
   your design is shown; everywhere else (the Show Editor's action Target
@@ -162,7 +163,50 @@ advances it. **STOP ALL** triggers the control named in **Player Stop
 Control Name** (Show Editor page, default `stop`) on every component
 referenced anywhere in the show. **PANIC** does the same and, if **Panic
 UDP Payload** is non-empty, sends that payload to every configured UDP
-target — bypassing the normal cue path entirely.
+target — bypassing the normal cue path entirely, and clears the grid's
+active/played coloring (but does **not** rewind the show position — it's a
+halt-in-place, not a restart; use **RESET** for that).
+
+### One active cue, played cues greyed out
+
+At any moment there is only ever **one** active cue on the Live Show grid —
+the last cue to *successfully* fire — shown in a distinct highlight color.
+The moment a different cue fires successfully, the previous active cue
+drops back to a greyed-out **played** color, so a glance at the grid always
+shows exactly where the show is and what's already happened:
+
+- **Idle** (never fired, or its own custom **Color**) — not yet played.
+- **Armed** (blue) — armed and not yet played.
+- **Active** (green) — the current cue; there's only ever one.
+- **Played** (grey) — was active, now superseded by a later cue.
+- **Error** (red) — the last attempt to fire this cue failed; see **Error
+  Text** in the status bar for the specific reason.
+- **Firing** (amber) — a brief flash while a cue's actions are dispatching.
+
+A cue whose fire **fails** never becomes the active cue and never advances
+**Next Cue** — the show stays sitting on whichever cue last succeeded, so
+GO/retry re-targets the same failed cue instead of silently skipping past
+it. Conditions (see above) work the same way: a cue blocked by a condition
+doesn't touch the active cue either.
+
+**RESET** (Live Show page, next to PANIC) rewinds *playback position only* —
+every cue's active/played/error coloring clears back to idle/armed, Current
+Cue and Next Cue reset to "none" / cue 1, and the status bar goes back to
+"No cue fired yet". It does **not** touch anything you've authored (cue
+names, notes, actions, devices, UDP targets) — it's a "start the show over"
+button, not an "erase the show" button. The reset is marked in the
+Activity Log so it's visible in the show's history rather than silently
+disappearing.
+
+### Current / Next Cue Notes
+
+Two large text views on the Live Show page show the **Notes** field (the
+same one you type into on the Show Editor page) for the current cue and
+the next one — put your cue words / call notes there and read them
+straight off the Live Show page while running the show. Like the rest of
+the "current cue" concept, these always reflect the last cue to
+*successfully* fire, not a failed attempt, and update live if you edit a
+cue's notes while it happens to be the current or next cue.
 
 ## Testing UDP sending
 
@@ -300,7 +344,15 @@ unmet per-cue condition is blocked and logs `BLOCKED`, then fires once the
 mocked control's live state is flipped to satisfy it; and a Global
 Condition is shown to gate a cue that has no condition of its own, cleared
 afterward so it doesn't affect anything else, plus a round-trip through
-export/import. The layout check also confirms every declared control
+export/import. The single-active-cue behavior is checked directly: firing
+one cue then another confirms the first demotes to the played color and
+the second becomes active; a deliberately failing fire confirms the
+previously-active cue's color and the Current/Next Cue Notes views are
+left untouched (never overwritten by the failed cue); Reset Show is
+checked to clear active/played/error coloring and the status bar back to
+their boot state while leaving a cue's own authored notes/content intact;
+and the notes views are checked to advance correctly across successive
+successful fires. The layout check also confirms every declared control
 appears on exactly one of the three pages (never more than one, never
 zero, except the intentionally-hidden `ShowData`). It has **not** been run
 inside actual Q-SYS Designer or against real hardware — do that before a
