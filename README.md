@@ -27,10 +27,10 @@ The component has five pages (visible as tabs at the top of its
 properties/control panel in Designer):
 
 - **Live Show** — the compact operator view: show/lock strip, status bar,
-  GO / STOP ALL / **E-STOP** / **CLEAR E-STOP** / RESET / **DARK MODE**
-  transport, large Current/Next Cue Notes ("cue words") views, the
-  quick-fire cue grid, and a live activity log. Sized to fit comfortably on
-  one screen (~920px wide).
+  GO / STOP ALL / **E-STOP** / **CLEAR E-STOP** / RESET transport, large
+  Current/Next Cue Notes ("cue words") views, the quick-fire cue grid, and
+  a live activity log. Sized to fit comfortably on one screen (~920px
+  wide).
 - **Devices** — a curated list of Q-SYS components ("Devices") and UDP
   targets. This is the only place the full, raw list of every component in
   your design is shown; everywhere else (the Show Editor's/Action Groups'/
@@ -69,8 +69,7 @@ with card-style grouped sections and section headings.
 | **Max Action Groups** | Number of reusable Action Groups | 8 | 0–24 |
 | **UDP Targets** | Number of configurable UDP devices | 6 | 0–12 |
 | **Show Debug** | Show the Lua debug window; also gates `print()` mirroring of errors/cue-fire log lines | false | — |
-| **Logo (base64, optional)** | Raw base64 — SVG XML or a PNG/JPEG file's bytes, format auto-detected — rendered top-right on every page. Empty = no logo. Design-time only — see "Branding and optional logo" below | "" (empty) | — |
-| **Dark Background (design-time)** | Darkens the page background and title text. Design-time only, separate from the runtime DARK MODE button — see "Colors and theming" below | false | — |
+| **Logo (base64, optional)** | Raw base64 — SVG XML or a PNG/JPEG file's bytes, format auto-detected — rendered top-right on every page, ships with a default LAUPI PRODUCTION logo. Empty = no logo. Design-time only — see "Branding and optional logo" below | LAUPI PRODUCTION logo (PNG) | — |
 | **Max TC Cues** | Size of the Timecode Show's cue list | 16 | 0–30 |
 
 Changing any of these **resizes the control set** (`GetControls` declares a
@@ -357,29 +356,29 @@ digital I/O card, another block's logic, a global "kill" signal, etc.
 
 ### Branding and optional logo
 
-The Live Show page carries a small **"CUE SYSTEM BY LAUPI PRODUCTION"**
-branding line next to the page title, and the component's `PluginInfo`
+Every page carries a styled **title bar** at the top: the page name on the
+left ("SHOW CUE ENGINE ~ Live Show" etc.) inside a bordered, accent-outlined
+bar, with the small **"CUE SYSTEM BY LAUPI PRODUCTION"** branding line on
+the right on the Live Show page specifically. The component's `PluginInfo`
 (shown in Designer's schematic library, e.g. right-click → Properties)
 carries `Author = "LAUPI PRODUCTION"`.
 
 **Logo (base64, optional)** (a Property, not a runtime control) renders a
-small square image in the top-right corner of every page. It **ships with
-LAUPI PRODUCTION's logo already embedded as the Property's default value**
-— nothing to configure, it's just there out of the box. Paste **raw
-base64** — either your SVG file's XML, or a PNG/JPEG file's bytes — with
-**no** `data:image/...;base64,` prefix, just the base64 text itself, to
-replace it. Clear the Property to empty for no logo at all. The plugin
+small square image beside the title bar, top-right corner of every page,
+bottom-aligned with the bar and matching its 16px padding to both the page
+top and the page's right edge. It **ships with LAUPI PRODUCTION's logo
+already embedded as the Property's default value** — nothing to configure,
+it's just there out of the box. Paste **raw base64** — either your SVG
+file's XML, or a PNG/JPEG file's bytes — with **no**
+`data:image/...;base64,` prefix, just the base64 text itself, to replace
+it. Clear the Property to empty for no logo at all. The plugin
 **auto-detects which kind you pasted** from the base64 content itself (PNG
 and JPEG files always base64-encode to a fixed, recognizable prefix) —
 there's one Property field to paste into regardless of format.
 
-> **The shipped logo is a white mark on a transparent background** (a
-> solid white "P" with thin outline strokes) — by design, this only reads
-> clearly against a **dark** background. With the page background in its
-> default **light** theme, it will be barely visible (white-on-near-white).
-> Turn on **Dark Background (design-time)** (see "Colors and theming"
-> below) to see it properly, or replace the Property with a dark/filled
-> version of the logo if you need it visible in Light mode too.
+The shipped logo is a white mark on a transparent background (a solid
+white "P" with thin outline strokes), which reads clearly against this
+plugin's dark page background by design.
 
 This is a **design-time-only** feature: Q-SYS plugin graphics (the card
 backgrounds, borders, and this logo image) are baked in once when Designer
@@ -390,79 +389,56 @@ operator swaps live during a performance. Changing it requires editing the
 Property in Designer (which re-runs `GetControlLayout` and updates it), the
 same as changing any other Property.
 
-### Light / Dark Mode
-
-**DARK MODE** (Live Show page, transport row) is a runtime toggle that
-re-skins the actual **Controls** it can reach: the transport buttons (GO,
-STOP ALL, RESET, CLEAR E-STOP), the cue grid's state colors (armed/active/
-played/error/firing), and the status/error LEDs. E-STOP itself stays vivid
-red regardless of mode — an emergency control shouldn't be dimmed. The
-preference is remembered with the rest of the show (export/import and the
-persisted `ShowData` both carry it) and re-applied on the next boot.
-
-**This is not a full theme swap, and it's a genuinely different mechanism
-from the page background** — see "Colors and theming" below for why, and
-for the separate **Dark Background** Property that covers the background.
-
 ### Colors and theming
 
-All of this plugin's colors live in **one place**: the `ThemeLight` /
-`ThemeDark` tables near the top of `ShowCueEngine.qplug`. To restyle the
-plugin, edit the RGB triplets there — every card, button, and status color
-in the whole plugin is sourced from these two tables (the runtime Dark Mode
-palette above is derived from `ThemeLight` too, by dimming it, rather than
-being a third set of numbers to keep in sync).
+The plugin uses **one fixed dark theme** — there is no Light Mode, no Dark
+Mode toggle, and no "Dark Background" Property. Every card, button, status
+color, and text color in the whole plugin is sourced from a single `Theme`
+table near the top of `ShowCueEngine.qplug`; to restyle the plugin, edit
+the RGB triplets there.
 
-There are, unavoidably, **two separate switches** for the two things Q-SYS
-lets a plugin actually recolor:
-
-- **Runtime Controls** (buttons, LEDs, the cue grid) — flipped live by the
-  **DARK MODE** button (see above). Instant, no Designer interaction needed.
-- **The page background and card borders** — these are plugin *graphics*,
-  which Q-SYS only draws when `GetControlLayout(props)` runs at design
-  time; there is no Lua API for a running plugin to redraw them. So this is
-  controlled by the **Dark Background (design-time)** Property instead —
-  flip it in Designer's Properties panel (not a runtime button) to darken
-  the page background and page titles. Card interiors intentionally stay
-  light in *both* themes, so the several dozen small text labels throughout
-  the plugin's editors don't need individual recoloring to stay legible.
-
-The two aren't linked live (there's no API to link them) but they **do**
-default to the same state on a fresh boot (no show saved yet) — set the
-Property before first use and the runtime toggle starts matching it. After
-a show has been saved once, the runtime toggle's own persisted state (see
-above) takes over, independent of the Property, since it's now something
-you toggle live rather than only at setup.
+An earlier build had a runtime **DARK MODE** button plus a separate
+design-time **Dark Background** Property (two different mechanisms, since
+Q-SYS Controls can be recolored live but plugin *graphics* — the page
+background, card borders, and card headings — can only be redrawn when
+`GetControlLayout(props)` runs at design time, never at runtime). That
+whole toggle system has been **removed** in favor of a single theme that's
+always applied, since running two visual states in sync across ~300
+controls added complexity without a corresponding need. Any show exported
+by an older build that still carries a `darkMode` field imports fine — the
+field is simply ignored.
 
 **Text boxes and plain text fields** (Cue Log, TC Cue Log, Current/Next Cue
-Notes, Export/Import JSON, and — since these follow the same treatment —
-the current-cue/Ready/Next Cue/Error status fields, Show Name/Last
-Modified, and every Device/UDP Target field on the Devices page) are a
-special case: Q-SYS's `Text`/`TextBox` control styles have **no
-background-fill property at all** — `Fill` only exists on card/page
-`GroupBox` graphics. So each of these is given `TextBoxStyle =
+Notes, Export/Import JSON, the current-cue/Ready/Next Cue/Error status
+fields, Show Name/Last Modified, and every Device/UDP Target field on the
+Devices page) are a special case: Q-SYS's `Text`/`TextBox` control styles
+have **no background-fill property at all** — `Fill` only exists on
+card/page `GroupBox` graphics. So each of these is given `TextBoxStyle =
 "NoBackground"` where applicable (makes a TextBox transparent) plus its own
-small themed rectangle drawn behind it at the identical position — the same
-mechanism `card()` already uses everywhere else in this plugin, not a new
-technique. Like the page background, this rectangle is picked by the
-**Dark Background (design-time)** Property, not the runtime button — set
-the Property, and these fields get a dark panel behind them too, not just
-the page around them. In Light mode the rectangle matches the card exactly,
-so nothing looks different from before.
+small themed rectangle (`Theme.TextBoxBg`) drawn behind it at the identical
+position — the same mechanism `card()` uses for its own background, not a
+new technique.
 
 Each field's *text* color is set the same proven way every button's color
 already is: as a `Color = {r,g,b}` entry directly in the layout table
-`GetControlLayout` returns, picked from the same Light/Dark theme, right
+`GetControlLayout` returns (`Theme.Text`, a light near-white), right
 alongside its background rectangle — so the two can never end up
 mismatched. **An earlier build tried setting text color at *runtime*
 instead** (`Controls.X.Color = ...` in `Init()`), which is confirmed *not*
 to repaint a `TextBox`'s text in real Designer — that attempt has been
 removed. Design-time `Color` is the same mechanism already relied on
-throughout this whole plugin (every button's face color works this way),
-so it carries much higher confidence, but — like everything in this
-section — it's still keyed to the **Property**, not the live DARK MODE
-button, and hasn't been visually confirmed against real Designer either;
-verify it there before a live show.
+throughout this whole plugin (every button's face color works this way).
+
+Every card's heading (e.g. "SHOW", "STATUS", "CUES (tap to fire)") is drawn
+as its **own `Text` graphic** with an explicit `Theme.Text` color,
+positioned over the card, rather than using the card's `GroupBox`'s
+built-in heading text — a `GroupBox` heading's text color isn't exposed by
+the documented layout API, so it can't reliably be forced light against a
+dark card fill. This was the most likely cause of the "header text not
+visible" report against the previous dark-card design; it's now fixed the
+same way every other piece of text in this plugin is colored. As with all
+graphics in this plugin, this hasn't been pixel-verified against real
+Designer — check it there before a live show.
 
 ## Testing UDP sending
 
@@ -516,11 +492,13 @@ in emulation.
 > (defined on the Devices page), not a raw Q-SYS component name. A show
 > exported from an earlier build of this plugin will need its action
 > targets renamed to match configured Device names before re-importing.
-> The schema also now carries `actionGroups` (reusable Action Groups),
-> `darkMode` (the Light/Dark Mode preference), and `tc` (the Timecode
-> Show's cues, frame rate, and source) — all optional on import: a show
-> exported before any of these features existed imports fine without them
-> (no groups, Light Mode, no TC cues).
+> The schema also now carries `actionGroups` (reusable Action Groups) and
+> `tc` (the Timecode Show's cues, frame rate, and source) — both optional
+> on import: a show exported before these features existed imports fine
+> without them (no groups, no TC cues). A show carrying an older
+> `darkMode` field (from a build that still had the Light/Dark Mode
+> toggle) also imports fine — the field is simply ignored, since there's
+> now only one theme.
 
 ## Timecode Show
 
@@ -724,16 +702,15 @@ specified:
    Reachable/Unreachable as expected.
 4. **Plugin graphics cannot be redrawn at runtime**: there is no documented
    Lua API for a running plugin to repaint the card/page backgrounds
-   `GetControlLayout` draws at design time. This shapes three features: the
-   optional logo is necessarily a design-time-only Property (see "Optional
-   logo"); Dark Mode necessarily only re-skins actual `Controls` (transport
-   buttons, cue grid, status LEDs) rather than the page/card backgrounds
-   themselves; and the page background's own light/dark palette is
-   necessarily a second, separate Property (**Dark Background
-   (design-time)**) rather than something the runtime DARK MODE button can
-   reach — see "Colors and theming". If a future Designer/Lua release adds a
-   runtime graphics API, all three could be extended to cover backgrounds
-   live.
+   `GetControlLayout` draws at design time. This is why the optional logo
+   is necessarily a design-time-only Property (see "Branding and optional
+   logo"), and why this plugin settled on **one fixed theme** rather than a
+   runtime-toggled one — a prior build's separate runtime Dark Mode button
+   and design-time Dark Background Property were removed specifically
+   because keeping a Controls-only runtime palette in sync with a
+   graphics-only design-time one, across two mechanisms with no live link
+   between them, added real complexity without a matching need. See
+   "Colors and theming".
 5. **E-Stop pin semantics**: `UserPin = true, PinStyle = "Input"` on
    `PanicButton` is the confirmed syntax for exposing a schematic input pin
    on a Boolean Toggle control, but the exact behavior of an external pin
@@ -776,8 +753,7 @@ specified:
    confidence since it's the exact mechanism the whole rest of this plugin
    already depends on, but it has **not itself** been visually re-confirmed
    in Designer yet (only the now-disproven runtime path was actually
-   tested) — verify it before a live show, especially with Dark Background
-   on.
+   tested) — verify it before a live show.
 9. **Raster logo (`Type = "Image"`)**: PNG/JPEG base64 support (now used by
    the shipped default LAUPI PRODUCTION logo, a 1500x1500 PNG) is built
    from documented syntax (`{ Type = "Image", Image = base64string,
@@ -852,26 +828,25 @@ log entry; attempting to clear it any way other than the dedicated Clear
 E-Stop button is confirmed to force the control straight back to engaged;
 Clear E-Stop is confirmed to actually release the latch and let cues fire
 normally again; and it's confirmed to cancel a cue's pending `wait`, same
-as the old Panic button did. Dark Mode is checked to actually change the
-transport buttons' `.Color` at runtime, restore the original color when
-toggled back off, and round-trip its on/off state (and the resulting
-colors) through export/import. The design-time color consolidation is
-checked directly too: the **Dark Background (design-time)** Property is
-confirmed to change the page background and title text colors returned by
-`GetControlLayout`, while card interiors stay identical between the two
-themes (proving cards intentionally don't need per-element recoloring); and
-a couple of runtime transport button colors are checked against their
-expected values to confirm they still resolve correctly now that they're
-derived from the shared `ThemeLight` table instead of separately hardcoded.
-The text-field background/color workaround is checked too: `CueLogText` is
-confirmed to carry `TextBoxStyle = "NoBackground"` and to have a themed
-GroupBox rectangle at its exact position (white in Light, dark in Dark
-Background), and its design-time `Color` field is confirmed to be dark in
-Light mode and light in Dark Background mode — same check repeated for
-`StatusText`/`ShowNameText` (Live Show page) and `DeviceName 1`/
-`UdpTargetName 1` (Devices page) as a representative spot-check of the
-fields extended to match the user's report that runtime `.Color` left
-these boxes' text unreadable in Dark Background.
+as the old Panic button did. The exported show is confirmed to no longer
+carry a `darkMode` field, now that the runtime toggle has been removed.
+The single-theme design is checked directly too: the page background,
+title bar text, and every card's heading are confirmed to resolve to the
+fixed `Theme.PageBg`/`Theme.Text` colors returned by `GetControlLayout`,
+with no Property able to change them; card headings are confirmed to be
+drawn as their own `Text` graphic (not the `GroupBox`'s built-in heading)
+so their color is actually controllable; and a couple of design-time
+transport button colors (`GoButton`, `ResetShowButton`) are checked against
+their expected values to confirm they still resolve correctly now that
+they're derived from the single `Theme` table instead of two side-by-side
+ones. The text-field background/color workaround is checked too:
+`CueLogText` is confirmed to carry `TextBoxStyle = "NoBackground"` and to
+have a themed GroupBox rectangle (`Theme.TextBoxBg`) at its exact position,
+and its design-time `Color` field is confirmed to be `Theme.Text` — same
+check repeated for `StatusText`/`ShowNameText` (Live Show page) and
+`DeviceName 1`/`UdpTargetName 1` (Devices page) as a representative
+spot-check of the fields extended to match the user's report that runtime
+`.Color` left these boxes' text unreadable against a dark background.
 
 The Timecode Show is checked end-to-end using the same upgraded `Timer`
 mock (now correctly auto-repeating, matching real Q-SYS `Timer:Start()`
