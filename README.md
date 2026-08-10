@@ -69,8 +69,10 @@ with card-style grouped sections and section headings.
 | **Max Action Groups** | Number of reusable Action Groups | 8 | 0–24 |
 | **UDP Targets** | Number of configurable UDP devices | 6 | 0–12 |
 | **Show Debug** | Show the Lua debug window; also gates `print()` mirroring of errors/cue-fire log lines | false | — |
-| **Logo (base64, optional)** | Raw base64 — SVG XML or a PNG/JPEG file's bytes, format auto-detected — rendered top-right on every page, ships with a default LAUPI PRODUCTION logo. Empty = no logo. Design-time only — see "Branding and optional logo" below | LAUPI PRODUCTION logo (PNG) | — |
 | **Max TC Cues** | Size of the Timecode Show's cue list | 16 | 0–30 |
+
+The logo (top-right of every page) is **not** a Property — it's baked
+directly into the script; see "Branding and optional logo" below.
 
 Changing any of these **resizes the control set** (`GetControls` declares a
 static, fixed-size set of controls sized only from these Properties — the
@@ -363,31 +365,31 @@ the right on the Live Show page specifically. The component's `PluginInfo`
 (shown in Designer's schematic library, e.g. right-click → Properties)
 carries `Author = "LAUPI PRODUCTION"`.
 
-**Logo (base64, optional)** (a Property, not a runtime control) renders a
-small square image beside the title bar, top-right corner of every page,
-bottom-aligned with the bar and matching its 16px padding to both the page
-top and the page's right edge. It **ships with LAUPI PRODUCTION's logo
-already embedded as the Property's default value** — nothing to configure,
-it's just there out of the box. Paste **raw base64** — either your SVG
-file's XML, or a PNG/JPEG file's bytes — with **no**
-`data:image/...;base64,` prefix, just the base64 text itself, to replace
-it. Clear the Property to empty for no logo at all. The plugin
-**auto-detects which kind you pasted** from the base64 content itself (PNG
-and JPEG files always base64-encode to a fixed, recognizable prefix) —
-there's one Property field to paste into regardless of format.
+The **logo** renders as a small square image beside the title bar, top-right
+corner of every page, bottom-aligned with the bar and matching its 16px
+padding to both the page top and the page's right edge. It's **LAUPI
+PRODUCTION's logo, baked directly into the plugin script** as a `local
+LOGO_BASE64 = "..."` constant near the top of `ShowCueEngine.qplug` —
+**not a Property**, so it doesn't appear in Designer's Properties panel at
+all; nothing to configure, nothing an integrator can see or accidentally
+edit there, it's just always there. The graphics `Type` ("Svg" vs raster
+"Image") is auto-detected from the base64 content itself (PNG and JPEG
+files always base64-encode to a fixed, recognizable prefix).
 
 The shipped logo is a white mark on a transparent background (a solid
 white "P" with thin outline strokes), which reads clearly against this
 plugin's dark page background by design.
 
-This is a **design-time-only** feature: Q-SYS plugin graphics (the card
+To replace or remove the logo, edit the `LOGO_BASE64` constant directly in
+the script (raw base64 — SVG XML or a PNG/JPEG file's bytes, no
+`data:image/...;base64,` prefix; empty string `""` = no logo). This is a
+**design-time-only** feature either way: Q-SYS plugin graphics (the card
 backgrounds, borders, and this logo image) are baked in once when Designer
 runs `GetControlLayout(props)` — there is no documented Lua API for a
-running plugin to redraw its own graphics. So the logo is something you set
-once in the Properties panel while building the show, not something an
-operator swaps live during a performance. Changing it requires editing the
-Property in Designer (which re-runs `GetControlLayout` and updates it), the
-same as changing any other Property.
+running plugin to redraw its own graphics — so the logo was never
+something an operator could swap live during a performance; it's now also
+not something exposed for a builder to swap from Designer's UI without
+touching the script.
 
 ### Colors and theming
 
@@ -702,9 +704,9 @@ specified:
    Reachable/Unreachable as expected.
 4. **Plugin graphics cannot be redrawn at runtime**: there is no documented
    Lua API for a running plugin to repaint the card/page backgrounds
-   `GetControlLayout` draws at design time. This is why the optional logo
-   is necessarily a design-time-only Property (see "Branding and optional
-   logo"), and why this plugin settled on **one fixed theme** rather than a
+   `GetControlLayout` draws at design time. This is why the logo is
+   necessarily fixed at build time (see "Branding and optional logo"), and
+   why this plugin settled on **one fixed theme** rather than a
    runtime-toggled one — a prior build's separate runtime Dark Mode button
    and design-time Dark Background Property were removed specifically
    because keeping a Controls-only runtime palette in sync with a
@@ -764,7 +766,7 @@ specified:
    confirmed correct against the actual shipped file's real signature — but
    the `Type = "Image"` *rendering* path itself hasn't been visually
    confirmed in real Designer — verify the logo actually appears (and looks
-   right at a 36x36 box) before relying on it for a show.
+   right at a 32x32 box) before relying on it for a show.
 
 ## Validation performed
 
@@ -880,9 +882,14 @@ and CLEAR ALL is confirmed to require two presses, then wipe a cue's name,
 a device, a UDP target, and the TC clock all at once, log the event, and
 leave the editor pointed back at cue 1 -- while a single press is
 confirmed to leave everything untouched. `PluginInfo.Author` and the
-Live Show branding text are checked directly, and the logo's PNG/JPEG/SVG
-`Type` auto-detection is checked against real PNG and JPEG base64
-signature prefixes.
+Live Show branding text are checked directly; the baked-in logo is
+confirmed to render on every page with no corresponding Property exposing
+it, auto-detected as a PNG `Image`. The page-background graphic is
+confirmed to be inserted at the front of each page's graphics array
+(rendered first, behind everything else) rather than appended last (which
+would paint an opaque rectangle over the title bar, cards, and text ahead
+of it) -- the concrete bug behind an earlier "header text not visible"
+report.
 
 It has **not** been run inside actual Q-SYS Designer or against real
 hardware — do that before a live show, per the persistence note above,
