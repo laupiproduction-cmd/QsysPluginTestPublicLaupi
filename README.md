@@ -380,6 +380,28 @@ a show has been saved once, the runtime toggle's own persisted state (see
 above) takes over, independent of the Property, since it's now something
 you toggle live rather than only at setup.
 
+**Text boxes** (Cue Log, TC Cue Log, Current/Next Cue Notes, Export/Import
+JSON) are a special case: Q-SYS's `TextBox` control style has **no
+background-fill property at all** — not at design time (`Fill` only exists
+on card/page `GroupBox` graphics), and not at runtime. So each of these is
+given `TextBoxStyle = "NoBackground"` (makes it transparent) plus its own
+themed rectangle drawn behind it at the identical position — the same
+mechanism `card()` already uses everywhere else in this plugin, not a new
+technique. Like the page background, this rectangle is picked by the
+**Dark Background (design-time)** Property, not the runtime button — set
+the Property, and these boxes get a dark panel behind them too, not just
+the page around them.
+
+Their *text* color is also set, once, at boot — to a light color if Dark
+Background is on, dark otherwise — paired to the Property (not the runtime
+toggle), so the box and its text can never end up mismatched (light text
+on a light box, or the reverse). One caveat: Q-SYS's own documentation
+doesn't unambiguously confirm that `.Color` repaints a `TextBox`'s text at
+runtime (only that it's an accepted assignment) — this is attempted
+defensively (wrapped so a failure here can't affect anything else) but
+**verify it visually in real Designer**, especially with Dark Background
+on, before trusting these boxes stay readable.
+
 ## Testing UDP sending
 
 1. On the **Devices** page, fill in one of the **UDP Targets** rows: Name,
@@ -677,6 +699,18 @@ specified:
    source is 29.97 non-drop, 30fps here is the closest fit; a true
    drop-frame source will read up to ~3.6 seconds "ahead" of real time
    after an hour, since dropped frame numbers are never accounted for.
+8. **TextBox runtime text color**: `Style = "TextBox"` controls (Cue Log,
+   TC Cue Log, notes, Export/Import) have no background-fill property at
+   all, confirmed against Q-SYS's own plugin documentation (`Fill` exists
+   only on `GroupBox` graphics) — hence the themed rectangle-behind-a-
+   transparent-TextBox approach described in "Colors and theming". Setting
+   `Controls.X.Color` on a `TextBox` at runtime to affect its *text* color
+   is accepted by the API but its effect **could not be unambiguously
+   confirmed** from available documentation or from a real, unmodified
+   example plugin (which never happened to use it). It's attempted
+   defensively at boot, paired to the Dark Background Property, and can't
+   affect anything else if it's a no-op — but verify these boxes' text
+   stays legible in real Designer, particularly with Dark Background on.
 
 ## Validation performed
 
@@ -751,6 +785,10 @@ themes (proving cards intentionally don't need per-element recoloring); and
 a couple of runtime transport button colors are checked against their
 expected values to confirm they still resolve correctly now that they're
 derived from the shared `ThemeLight` table instead of separately hardcoded.
+The TextBox background workaround is checked too: `CueLogText` is confirmed
+to carry `TextBoxStyle = "NoBackground"` and to have a themed GroupBox
+rectangle at its exact position (white in Light, dark in Dark Background),
+and its runtime `.Color` is confirmed to be set at boot to match.
 
 The Timecode Show is checked end-to-end using the same upgraded `Timer`
 mock (now correctly auto-repeating, matching real Q-SYS `Timer:Start()`

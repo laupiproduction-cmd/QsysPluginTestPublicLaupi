@@ -53,7 +53,7 @@
 
 PluginInfo = {
   Name = "Show Control~CueEngine",
-  Version = "1.6.0",
+  Version = "1.7.0",
   Id = "com.yourcompany.showcontrol.cueengine",
   Description = "Live-show cue engine: up to 30 cues, each firing a reorderable, optionally-delayed sequence of actions (player triggers, UDP, named controls, wait, reusable action groups).",
   ShowDebug = true,
@@ -97,6 +97,7 @@ local ThemeLight = {
   StatusNeutral = { 110, 118, 128 }, -- status/error LED at rest
   Played        = { 38, 40, 45 },    -- a superseded cue, dimmed well below idle
   CueIdle       = { 70, 82, 97 },    -- a cue button's placeholder color before Init() runs
+  TextBoxBg     = { 255, 255, 255 }, -- log/notes/export TextBoxes -- see "NoBackground" note below
 }
 
 -- Q-SYS plugin graphics (the page background and card borders) are only
@@ -112,6 +113,17 @@ local ThemeLight = {
 -- recoloring. Only the page background, plus the couple of text elements
 -- that sit directly on it (page titles, the Action Groups intro line), go
 -- dark.
+--
+-- TextBoxBg is a partial exception: Style="TextBox" controls (the Cue Log,
+-- notes views, Export/Import JSON) have NO background-fill property of
+-- their own at all (Q-SYS's `Fill` only exists on GroupBox graphics) --
+-- only `TextBoxStyle = "NoBackground"` (transparent) or the default opaque
+-- style. So each of these is set to NoBackground and given its own GroupBox
+-- Fill rectangle placed exactly behind it (the same proven mechanism as
+-- card()/pageBackground() -- graphics always render behind every Control,
+-- so this is not a new technique). This IS still design-time-only, same as
+-- the rest of ThemeDark -- it changes with the Property, not live with the
+-- DARK MODE button.
 local ThemeDark = {
   PageBg        = { 24, 26, 30 },
   Card          = ThemeLight.Card,
@@ -126,6 +138,7 @@ local ThemeDark = {
   StatusNeutral = ThemeLight.StatusNeutral,
   Played        = ThemeLight.Played,
   CueIdle       = ThemeLight.CueIdle,
+  TextBoxBg     = { 34, 37, 42 }, -- a touch lighter than PageBg so it reads as its own panel
 }
 
 --=============================================================================
@@ -429,6 +442,15 @@ function GetControlLayout(props)
     }
   end
 
+  -- A Style="TextBox" control has no background-fill property of its own
+  -- (Fill only exists on GroupBox graphics) -- call this at the SAME
+  -- Position/Size as a TextBox layout entry (and set that entry's
+  -- TextBoxStyle = "NoBackground") to give it a themed fill, the same way
+  -- card() gives its Controls a background.
+  local function textBoxBg(x, y, w, h)
+    graphics[#graphics + 1] = { Type = "GroupBox", Fill = T.TextBoxBg, StrokeColor = Border, StrokeWidth = 1, CornerRadius = 4, Position = { x, y }, Size = { w, h } }
+  end
+
   if currentPage == "Live Show" then
     ------------------------------------------------------------------------
     -- Page 1: compact operator view -- status, transport, quick-fire grid.
@@ -482,10 +504,12 @@ function GetControlLayout(props)
     local notesH = 90
     local notesHalfW = (W - 2 * M - 12) / 2
     card(M, notesY, notesHalfW, notesH, "CURRENT CUE NOTES")
-    layout["CurrentCueNotesText"] = { PrettyName = "Current Cue Notes", Style = "TextBox", Position = { M + 14, notesY + 22 }, Size = { notesHalfW - 28, notesH - 36 } }
+    textBoxBg(M + 14, notesY + 22, notesHalfW - 28, notesH - 36)
+    layout["CurrentCueNotesText"] = { PrettyName = "Current Cue Notes", Style = "TextBox", TextBoxStyle = "NoBackground", Position = { M + 14, notesY + 22 }, Size = { notesHalfW - 28, notesH - 36 } }
     local notes2X = M + notesHalfW + 12
     card(notes2X, notesY, notesHalfW, notesH, "NEXT CUE NOTES")
-    layout["NextCueNotesText"] = { PrettyName = "Next Cue Notes", Style = "TextBox", Position = { notes2X + 14, notesY + 22 }, Size = { notesHalfW - 28, notesH - 36 } }
+    textBoxBg(notes2X + 14, notesY + 22, notesHalfW - 28, notesH - 36)
+    layout["NextCueNotesText"] = { PrettyName = "Next Cue Notes", Style = "TextBox", TextBoxStyle = "NoBackground", Position = { notes2X + 14, notesY + 22 }, Size = { notesHalfW - 28, notesH - 36 } }
 
     -- Cue grid (quick-fire) + activity log side-by-side ------------------------
     local gridCols = 6
@@ -515,7 +539,8 @@ function GetControlLayout(props)
     local logCardX = gridCardX + gridCardW + 12
     local logCardW = W - M - logCardX
     card(logCardX, gridCardY, logCardW, gridCardH, "ACTIVITY LOG")
-    layout["CueLogText"] = { PrettyName = "Cue Fire Log", Style = "TextBox", Position = { logCardX + 14, gridCardY + 30 }, Size = { logCardW - 28, gridCardH - 44 } }
+    textBoxBg(logCardX + 14, gridCardY + 30, logCardW - 28, gridCardH - 44)
+    layout["CueLogText"] = { PrettyName = "Cue Fire Log", Style = "TextBox", TextBoxStyle = "NoBackground", Position = { logCardX + 14, gridCardY + 30 }, Size = { logCardW - 28, gridCardH - 44 } }
 
     local pageH = gridCardY + gridCardH + M
     pageBackground(W, pageH)
@@ -647,9 +672,11 @@ function GetControlLayout(props)
     -- Export / Import -------------------------------------------------------------
     card(M, y, W - 2 * M, 172, "EXPORT / IMPORT SHOW (copy-paste JSON)")
     layout["ExportButton"] = { PrettyName = "Export Show", Style = "Button", ButtonStyle = "Trigger", Legend = "Export", Color = Accent, CornerRadius = 4, Position = { 28, y + 18 }, Size = { 100, 22 } }
-    layout["ExportData"] = { PrettyName = "Export JSON (copy this)", Style = "TextBox", Position = { 28, y + 46 }, Size = { 320, 100 } }
+    textBoxBg(28, y + 46, 320, 100)
+    layout["ExportData"] = { PrettyName = "Export JSON (copy this)", Style = "TextBox", TextBoxStyle = "NoBackground", Position = { 28, y + 46 }, Size = { 320, 100 } }
     layout["ImportButton"] = { PrettyName = "Import Show", Style = "Button", ButtonStyle = "Trigger", Legend = "Import", Color = Accent, CornerRadius = 4, Position = { 364, y + 18 }, Size = { 100, 22 } }
-    layout["ImportData"] = { PrettyName = "Import JSON (paste here)", Style = "TextBox", Position = { 364, y + 46 }, Size = { 320, 100 } }
+    textBoxBg(364, y + 46, 320, 100)
+    layout["ImportData"] = { PrettyName = "Import JSON (paste here)", Style = "TextBox", TextBoxStyle = "NoBackground", Position = { 364, y + 46 }, Size = { 320, 100 } }
     layout["ImportErrorText"] = { PrettyName = "Import Error", Style = "Text", Position = { 364, y + 150 }, Size = { 320, 18 } }
     graphics[#graphics + 1] = {
       Type = "Text",
@@ -768,7 +795,8 @@ function GetControlLayout(props)
       local logCardX = gridCardX + gridCardW + 12
       local logCardW = W - M - logCardX
       card(logCardX, gridCardY, logCardW, gridCardH, "TC ACTIVITY LOG")
-      layout["TcCueLogText"] = { PrettyName = "TC Cue Fire Log", Style = "TextBox", Position = { logCardX + 14, gridCardY + 30 }, Size = { logCardW - 28, gridCardH - 44 } }
+      textBoxBg(logCardX + 14, gridCardY + 30, logCardW - 28, gridCardH - 44)
+      layout["TcCueLogText"] = { PrettyName = "TC Cue Fire Log", Style = "TextBox", TextBoxStyle = "NoBackground", Position = { logCardX + 14, gridCardY + 30 }, Size = { logCardW - 28, gridCardH - 44 } }
 
       y = y + gridCardH + 12
 
@@ -3705,6 +3733,23 @@ Init = function()
   pcall(function() Controls.DarkModeToggle.Boolean = DarkMode end)
   ApplyColorMode(DarkMode)
   pcall(function() Controls.UnsavedLed.Color = StateColors.neutral end)
+
+  -- Pair each TextBox's TEXT color with its textBoxBg() Fill rectangle from
+  -- GetControlLayout -- keyed off the Dark Background PROPERTY (not the
+  -- runtime DarkMode toggle), since the rectangle behind it is design-time
+  -- and never changes without a reboot, so the text color shouldn't drift
+  -- out of sync with it live either. Q-SYS's docs don't unambiguously
+  -- confirm .Color repaints a TextBox's text (only that it's accepted) --
+  -- this is attempted defensively (pcall) once at boot; if it silently
+  -- doesn't take, only these boxes' text stays default-colored, nothing
+  -- else is affected. Verify in real Designer, especially in Dark Background.
+  do
+    local darkBgProp = Properties["Dark Background (design-time)"] and Properties["Dark Background (design-time)"].Value and true or false
+    local textColor = RgbToHex((darkBgProp and ThemeDark or ThemeLight).Text)
+    for _, name in ipairs({ "CurrentCueNotesText", "NextCueNotesText", "CueLogText", "ExportData", "ImportData", "TcCueLogText" }) do
+      pcall(function() Controls[name].Color = textColor end)
+    end
+  end
 
   StartPingHeartbeat()
 
