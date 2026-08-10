@@ -38,9 +38,13 @@
 
   Also: a latching E-Stop (Toggle, with a schematic input pin) that can
   only be cleared with a separate Clear E-Stop button; an optional design-
-  time logo (paste base64 SVG in Properties); and a runtime Light/Dark Mode
+  time logo (paste base64 SVG in Properties); a runtime Light/Dark Mode
   toggle that re-skins the transport buttons, cue grid, and status LEDs
-  (page/card backgrounds are fixed at design time -- see README).
+  (page/card backgrounds are fixed at design time -- see README); and a
+  fifth page, Timecode Show, running a SECOND, independent show driven by
+  timecode instead of GO/the cue grid -- a soft-sync clock only (no
+  drop-frame, not frame-accurate) -- see README before relying on it for
+  anything frame-critical.
 
   Only documented Q-SYS Lua extensions are used: UdpSocket, Component,
   Controls, Timer, rapidjson, Ping. See README.md for install/config notes
@@ -49,7 +53,7 @@
 
 PluginInfo = {
   Name = "Show Control~CueEngine",
-  Version = "1.5.0",
+  Version = "1.6.0",
   Id = "com.yourcompany.showcontrol.cueengine",
   Description = "Live-show cue engine: up to 30 cues, each firing a reorderable, optionally-delayed sequence of actions (player triggers, UDP, named controls, wait, reusable action groups).",
   ShowDebug = true,
@@ -62,6 +66,7 @@ local HARD_MAX_ACTIONS = 25
 local HARD_MAX_DEVICES = 24
 local HARD_MAX_UDP = 12
 local HARD_MAX_ACTION_GROUPS = 24
+local HARD_MAX_TC_CUES = 30
 
 --=============================================================================
 -- Theme: the ONE place to edit this plugin's colors, split into a Light and
@@ -178,6 +183,13 @@ function GetProperties()
     Type = "boolean",
     Value = false,
   })
+  table.insert(props, {
+    Name = "Max TC Cues",
+    Type = "integer",
+    Min = 0,
+    Max = HARD_MAX_TC_CUES,
+    Value = 16,
+  })
   return props
 end
 
@@ -196,6 +208,7 @@ function GetControls(props)
   local maxDevices = props["Max Devices"].Value
   local maxActionGroups = props["Max Action Groups"].Value
   local numUdp = props["UDP Targets"].Value
+  local maxTcCues = props["Max TC Cues"].Value
 
   local ctrls = {}
   local function add(t) table.insert(ctrls, t) end
@@ -309,13 +322,53 @@ function GetControls(props)
     add({ Name = "GroupActionRemove", ControlType = "Button", ButtonType = "Trigger", Count = maxActions })
   end
 
+  -- Timecode Show: a second, independent show driven by TC instead of GO/the
+  -- cue grid -- see the "Timecode Show" page. Still uses the same Devices
+  -- and Action Groups as the Live Show. This is a SOFT-SYNC clock (see
+  -- README) -- not frame-accurate, no drop-frame support.
+  add({ Name = "TcCurrentText", ControlType = "Text", Count = 1 })
+  add({ Name = "TcFrameRate", ControlType = "Text", Count = 1 })
+  add({ Name = "TcSourceToggle", ControlType = "Button", ButtonType = "Toggle", Count = 1 })
+  add({ Name = "TcRunToggle", ControlType = "Button", ButtonType = "Toggle", Count = 1 })
+  add({ Name = "TcResetClockButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
+  add({ Name = "TcRearmButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
+  add({ Name = "TcStatusText", ControlType = "Text", Count = 1 })
+  -- External TC in / out -- schematic pins so another component (a real LTC/
+  -- MTC decoder, an external show-control system) can drive this plugin's
+  -- clock, or read it back out. Both are plain "HH:MM:SS:FF" strings; see
+  -- README for exactly what these pins can and can't do reliably. Never
+  -- placed in GetControlLayout (like ShowData) -- a pin needs no on-canvas
+  -- widget; UserPin/PinStyle alone puts it on the schematic block.
+  add({ Name = "TcInput", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Input" })
+  add({ Name = "TcOutput", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Output" })
+
+  if maxTcCues > 0 then
+    add({ Name = "TcCueButton", ControlType = "Button", ButtonType = "Trigger", Count = maxTcCues })
+    add({ Name = "TcCueLogText", ControlType = "Text", Count = 1 })
+
+    add({ Name = "SelectedTcCue", ControlType = "Text", Count = 1 })
+    add({ Name = "TcCueEditName", ControlType = "Text", Count = 1 })
+    add({ Name = "TcCueEditTime", ControlType = "Text", Count = 1 })
+    add({ Name = "TcCueEditEnabled", ControlType = "Button", ButtonType = "Toggle", Count = 1 })
+    add({ Name = "AddTcActionButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
+
+    add({ Name = "TcActionType", ControlType = "Text", Count = maxActions })
+    add({ Name = "TcActionTarget", ControlType = "Text", Count = maxActions })
+    add({ Name = "TcActionControl", ControlType = "Text", Count = maxActions })
+    add({ Name = "TcActionValue", ControlType = "Text", Count = maxActions })
+    add({ Name = "TcActionValueBool", ControlType = "Button", ButtonType = "Toggle", Count = maxActions })
+    add({ Name = "TcActionMoveUp", ControlType = "Button", ButtonType = "Trigger", Count = maxActions })
+    add({ Name = "TcActionMoveDown", ControlType = "Button", ButtonType = "Trigger", Count = maxActions })
+    add({ Name = "TcActionRemove", ControlType = "Button", ButtonType = "Trigger", Count = maxActions })
+  end
+
   return ctrls
 end
 
 --=============================================================================
 -- Design time: Pages, icon color/name, and Layout
 --=============================================================================
-local PageNames = { "Live Show", "Devices", "Action Groups", "Show Editor" }
+local PageNames = { "Live Show", "Devices", "Action Groups", "Show Editor", "Timecode Show" }
 
 function GetPages(props)
   local pages = {}
@@ -339,6 +392,7 @@ function GetControlLayout(props)
   local maxDevices = props["Max Devices"].Value
   local maxActionGroups = props["Max Action Groups"].Value
   local numUdp = props["UDP Targets"].Value
+  local maxTcCues = props["Max TC Cues"].Value
   local currentPage = PageNames[props["page_index"].Value]
 
   local layout = {}
@@ -660,6 +714,100 @@ function GetControlLayout(props)
 
     y = y + editorH + M
     pageBackground(W, y)
+
+  elseif currentPage == "Timecode Show" then
+    ------------------------------------------------------------------------
+    -- Page 5: a SECOND, independent show driven by timecode instead of GO/
+    -- the cue grid -- still reads the same Devices and Action Groups as the
+    -- Live Show. This is a soft-sync clock (Timer-driven tick counting, or
+    -- whatever arrives on the TC Input pin) -- not frame-accurate, and only
+    -- non-drop 24/25/30fps are offered. See README's "Timecode Show"
+    -- section before relying on this for anything frame-critical.
+    ------------------------------------------------------------------------
+    local W = 920
+    local M = 16
+
+    title("SHOW CUE ENGINE  ~  Timecode Show", M, 6, 600)
+    local y = 30
+
+    card(M, y, W - 2 * M, 80, "TC TRANSPORT  (soft-sync -- see README before relying on this for anything frame-critical)")
+    layout["TcCurrentText"] = { PrettyName = "Current TC", Style = "Text", Position = { 28, y + 18 }, Size = { 180, 26 } }
+    layout["TcFrameRate"] = { PrettyName = "Frame Rate (non-drop)", Style = "ComboBox", Position = { 220, y + 18 }, Size = { 80, 26 } }
+    layout["TcSourceToggle"] = { PrettyName = "TC Source (off=Internal, on=External pin)", Style = "Button", ButtonStyle = "Toggle", Legend = "EXTERNAL", Color = Accent, OffColor = { 150, 155, 162 }, CornerRadius = 4, Position = { 312, y + 18 }, Size = { 110, 26 } }
+    layout["TcRunToggle"] = { PrettyName = "Run (Internal clock only)", Style = "Button", ButtonStyle = "Toggle", Legend = "RUN", Color = Success, CornerRadius = 4, Position = { 434, y + 18 }, Size = { 90, 26 } }
+    layout["TcResetClockButton"] = { PrettyName = "Reset Clock to Zero", Style = "Button", ButtonStyle = "Trigger", Legend = "RESET CLOCK", Color = { 90, 98, 112 }, CornerRadius = 4, Position = { 536, y + 18 }, Size = { 120, 26 } }
+    layout["TcRearmButton"] = { PrettyName = "Rearm All TC Cues", Style = "Button", ButtonStyle = "Trigger", Legend = "REARM CUES", Color = { 90, 98, 112 }, CornerRadius = 4, Position = { 666, y + 18 }, Size = { 120, 26 } }
+    layout["TcStatusText"] = { PrettyName = "TC Status", Style = "Text", Position = { 28, y + 50 }, Size = { W - 2 * M - 28 - 14, 20 } }
+    y = y + 80 + 12
+
+    if maxTcCues > 0 then
+      local gridCols = 6
+      local cellW, cellH, gap = 100, 40, 6
+      local gridRows = math.ceil(maxTcCues / gridCols)
+      local gridInnerW = gridCols * cellW + (gridCols - 1) * gap
+      local gridInnerH = gridRows * cellH + (gridRows - 1) * gap
+      local gridCardX, gridCardY = M, y
+      local gridCardW = gridInnerW + 28
+      local gridCardH = gridInnerH + 44
+      card(gridCardX, gridCardY, gridCardW, gridCardH, "TC CUES  (target time; tap to test-fire)")
+      local gridX, gridY = gridCardX + 14, gridCardY + 30
+      for i = 1, maxTcCues do
+        local col = (i - 1) % gridCols
+        local row = math.floor((i - 1) / gridCols)
+        layout[key("TcCueButton", maxTcCues, i)] = {
+          PrettyName = string.format("TC Cue %d~Test Fire", i),
+          Style = "Button", ButtonStyle = "Trigger",
+          Legend = tostring(i),
+          Color = T.CueIdle,
+          CornerRadius = 6,
+          Position = { gridX + col * (cellW + gap), gridY + row * (cellH + gap) },
+          Size = { cellW, cellH },
+        }
+      end
+
+      local logCardX = gridCardX + gridCardW + 12
+      local logCardW = W - M - logCardX
+      card(logCardX, gridCardY, logCardW, gridCardH, "TC ACTIVITY LOG")
+      layout["TcCueLogText"] = { PrettyName = "TC Cue Fire Log", Style = "TextBox", Position = { logCardX + 14, gridCardY + 30 }, Size = { logCardW - 28, gridCardH - 44 } }
+
+      y = y + gridCardH + 12
+
+      local rowH = 24
+      local editorH = 104 + maxActions * rowH
+      card(M, y, W - 2 * M, editorH, "TC CUE EDITOR")
+      layout["SelectedTcCue"] = { PrettyName = "Select TC Cue", Style = "ComboBox", Position = { 28, y + 18 }, Size = { 220, 20 } }
+      layout["TcCueEditName"] = { PrettyName = "Rename TC Cue", Style = "Text", Position = { 256, y + 18 }, Size = { 220, 20 } }
+      layout["TcCueEditTime"] = { PrettyName = "Target Time (HH:MM:SS:FF)", Style = "Text", Position = { 484, y + 18 }, Size = { 110, 20 } }
+      layout["TcCueEditEnabled"] = { PrettyName = "Enabled (auto-fires at its time)", Style = "Button", ButtonStyle = "Toggle", Legend = "Enabled", Color = Success, CornerRadius = 4, Position = { 602, y + 18 }, Size = { 90, 20 } }
+
+      graphics[#graphics + 1] = { Type = "Text", Text = "#", FontSize = 8, Position = { 28, y + 46 }, Size = { 20, 12 } }
+      graphics[#graphics + 1] = { Type = "Text", Text = "Type", FontSize = 8, Position = { 52, y + 46 }, Size = { 98, 12 } }
+      graphics[#graphics + 1] = { Type = "Text", Text = "Target (device / UDP target / group)", FontSize = 8, Position = { 154, y + 46 }, Size = { 148, 12 } }
+      graphics[#graphics + 1] = { Type = "Text", Text = "Control", FontSize = 8, Position = { 306, y + 46 }, Size = { 128, 12 } }
+      graphics[#graphics + 1] = { Type = "Text", Text = "Value (toggle if Boolean; wait = seconds)", FontSize = 8, Position = { 438, y + 46 }, Size = { 140, 12 } }
+
+      local rowsY = y + 60
+      for a = 1, maxActions do
+        local ry = rowsY + (a - 1) * rowH
+        graphics[#graphics + 1] = { Type = "Text", Text = tostring(a) .. ".", FontSize = 9, HTextAlign = "Right", Position = { 28, ry }, Size = { 20, 20 } }
+        layout[key("TcActionType", maxActions, a)] = { PrettyName = string.format("TC Action %d~Type", a), Style = "ComboBox", Position = { 52, ry }, Size = { 98, 20 } }
+        layout[key("TcActionTarget", maxActions, a)] = { PrettyName = string.format("TC Action %d~Target", a), Style = "ComboBox", Position = { 154, ry }, Size = { 148, 20 } }
+        layout[key("TcActionControl", maxActions, a)] = { PrettyName = string.format("TC Action %d~Control", a), Style = "ComboBox", Position = { 306, ry }, Size = { 128, 20 } }
+        layout[key("TcActionValue", maxActions, a)] = { PrettyName = string.format("TC Action %d~Value", a), Style = "Text", Position = { 438, ry }, Size = { 140, 20 } }
+        layout[key("TcActionValueBool", maxActions, a)] = { PrettyName = string.format("TC Action %d~Value (Boolean)", a), Style = "Button", ButtonStyle = "Toggle", Legend = "FALSE", Color = Success, OffColor = { 150, 155, 162 }, CornerRadius = 4, Position = { 438, ry }, Size = { 140, 20 } }
+        layout[key("TcActionMoveUp", maxActions, a)] = { PrettyName = string.format("TC Action %d~Move Up", a), Style = "Button", ButtonStyle = "Trigger", Legend = "^", CornerRadius = 4, Position = { 582, ry }, Size = { 26, 20 } }
+        layout[key("TcActionMoveDown", maxActions, a)] = { PrettyName = string.format("TC Action %d~Move Down", a), Style = "Button", ButtonStyle = "Trigger", Legend = "v", CornerRadius = 4, Position = { 610, ry }, Size = { 26, 20 } }
+        layout[key("TcActionRemove", maxActions, a)] = { PrettyName = string.format("TC Action %d~Remove", a), Style = "Button", ButtonStyle = "Trigger", Legend = "X", Color = Danger, CornerRadius = 4, Position = { 640, ry }, Size = { 26, 20 } }
+      end
+      layout["AddTcActionButton"] = { PrettyName = "Add Action to TC Cue", Style = "Button", ButtonStyle = "Trigger", Legend = "+ Add Action", Color = Accent, CornerRadius = 4, Position = { 28, rowsY + maxActions * rowH + 8 }, Size = { 130, 22 } }
+
+      y = y + editorH + M
+    else
+      graphics[#graphics + 1] = { Type = "Text", Text = "No TC Cue slots configured (set the 'Max TC Cues' Property to add some).", Color = T.Text, FontSize = 9, Position = { M, y }, Size = { 500, 16 } }
+      y = y + 40 + M
+    end
+
+    pageBackground(W, y)
   end
 
   -- Optional logo, top-right corner of every page. Q-SYS plugin graphics
@@ -691,6 +839,7 @@ local MaxDevices = Properties["Max Devices"].Value
 local MaxActionGroups = Properties["Max Action Groups"].Value
 local NumUdp = Properties["UDP Targets"].Value
 local DebugOn = Properties["Show Debug"].Value
+local MaxTcCues = Properties["Max TC Cues"].Value
 
 local ActionTypes = { "none", "player_trigger", "udp_send", "named_control_set", "wait", "group" }
 local ActionTypeSet = {}
@@ -766,6 +915,18 @@ local EvaluateCondition, CheckCueConditions, PopulateConditionControlChoices
 local RefreshConditionEditorVisibility, RefreshGlobalConditionVisibility, PushGlobalConditionToControls
 local RefreshCueNotesDisplays, ResetPlaybackState, ResetShow
 local ApplyColorMode, EngagePanic, ClearPanic
+-- Timecode Show (see the "Timecode Show" page): an independent, TC-driven
+-- show sharing Devices/Action Groups with the Live Show but never touching
+-- Cues/ActiveCueIndex/etc -- same "own parallel set of functions" approach
+-- already used for Action Groups, so nothing here can cross-contaminate the
+-- Live Show's state machine.
+local TcFramesToString, TcStringToFrames, TcRecomputeAllTargets
+local TcApplyFrameRate, TcSetSource, TcSetRunning, TcResetClock, TcRearmAllCues
+local TcTickHandler, EvaluateTcCues, RefreshTcCueButtonColor, LogTcCueFire
+local TcFireCueNow, TcDispatchCueActions, TcFinishCueFire, TcCancelAllPendingWaits
+local TcRefreshActionTargetChoices, TcRefreshActionControlChoices, TcRefreshVisibleActionChoices, TcRefreshActionValueEditor
+local TcRefreshSelectedCueChoices, TcRefreshActionRowVisibility, TcMoveActionUp, TcMoveActionDown
+local SelectTcCue, PushSelectedTcCueToEditor
 local Init
 
 -- ----------------------------------------------------------------------------
@@ -802,6 +963,20 @@ local CurrentStatusKind = "ready" -- "ready"|"firing"|"error"; tracks what Statu
                                     -- under whichever palette is active, so ApplyColorMode can
                                     -- refresh it without re-deriving current show state
 local ErrorActive = false -- tracks what ErrorLed should show (StateColors.error vs .neutral)
+
+-- Timecode Show state. TcCues[i] = { name, targetString ("HH:MM:SS:FF"),
+-- targetFrames (number, recomputed whenever TcFrameRate changes), enabled,
+-- fired, state, activeActions, actions = {1..MaxActions}, firing, pendingTimer }.
+-- Deliberately separate from Cues/ActiveCueIndex -- see the comment above
+-- the Tc* forward-declares.
+local TcCues = {}
+local SelectedTcCueIndex = 1
+local TcCueLog = {}
+local TcFrameRate = 30      -- fps; only 24/25/30 offered -- no drop-frame (see README)
+local TcRunning = false     -- Internal clock running (ignored when TcExternalSource)
+local TcExternalSource = false -- false = Internal (Timer-driven), true = TcInput pin drives it
+local TcFrameCounter = 0    -- current TC, in total frames since 00:00:00:00
+local TcTimer = nil         -- the Timer object driving the internal tick (only :Start()'d while running+internal)
 
 local CONFIRM_WINDOW_MS = 2000
 local DEBOUNCE_MS = 150
@@ -1268,6 +1443,20 @@ BuildShowTable = function()
   for i = 1, NumUdp do
     table.insert(udpOut, { name = UdpTargets[i].name, ip = UdpTargets[i].ip, port = UdpTargets[i].port })
   end
+  -- Timecode Show: only AUTHORED content (cue name/time/enabled/actions) and
+  -- setup preferences (frame rate, source) persist -- never the running
+  -- clock position or fired flags, same "authored vs. playback state"
+  -- split as the Live Show (see ResetPlaybackState).
+  local tcCuesOut = {}
+  for i = 1, MaxTcCues do
+    local c = TcCues[i]
+    local tcActionsOut = {}
+    for a = 1, MaxActions do
+      local act = c.actions[a]
+      table.insert(tcActionsOut, { type = act.type, target = act.target, control = act.control, value = act.value })
+    end
+    table.insert(tcCuesOut, { name = c.name, targetString = c.targetString, enabled = c.enabled, activeActions = c.activeActions, actions = tcActionsOut })
+  end
   return {
     showName = Controls.ShowNameText.String,
     lastModified = os.date("%Y-%m-%d %H:%M:%S"),
@@ -1277,6 +1466,7 @@ BuildShowTable = function()
     udpTargets = udpOut,
     globalCondition = { enabled = GlobalCondition.enabled, target = GlobalCondition.target, control = GlobalCondition.control, required = GlobalCondition.required },
     darkMode = DarkMode,
+    tc = { frameRate = TcFrameRate, source = (TcExternalSource and "external" or "internal"), cues = tcCuesOut },
   }
 end
 
@@ -1407,6 +1597,50 @@ ApplyShowTable = function(data)
     end
   end
 
+  -- Timecode Show: only authored cue content + setup preferences (frame
+  -- rate, source) come from here -- the running clock position and fired
+  -- flags are never restored (see BuildShowTable's comment; TcResetClock/
+  -- TcRearmAllCues below always start a loaded show at a clean 00:00:00:00).
+  local tcFrameRate, tcSource = 30, false
+  if type(data.tc) == "table" then
+    local tc = data.tc
+    if type(tc.cues) == "table" then
+      for i = 1, MaxTcCues do
+        local src = tc.cues[i]
+        local c = TcCues[i]
+        if src then
+          c.name = tostring(src.name or c.name)
+          c.targetString = tostring(src.targetString or c.targetString)
+          c.enabled = src.enabled and true or false
+          local highestUsed = 0
+          for a = 1, MaxActions do
+            local srcAct = src.actions and src.actions[a]
+            if srcAct then
+              c.actions[a] = {
+                type = ClampActionType(tostring(srcAct.type or "none")),
+                target = tostring(srcAct.target or ""),
+                control = tostring(srcAct.control or ""),
+                value = tostring(srcAct.value or ""),
+              }
+            else
+              c.actions[a] = { type = "none", target = "", control = "", value = "" }
+            end
+            if c.actions[a].type ~= "none" then highestUsed = a end
+          end
+          local taa = tonumber(src.activeActions)
+          if taa and taa >= 0 and taa <= MaxActions then
+            c.activeActions = math.floor(taa)
+          else
+            c.activeActions = highestUsed
+          end
+        end
+      end
+    end
+    local fr = tonumber(tc.frameRate)
+    if fr == 24 or fr == 25 or fr == 30 then tcFrameRate = fr end
+    tcSource = (tc.source == "external")
+  end
+
   local wasLoading = Loading
   Loading = true
   PushGlobalConditionToControls()
@@ -1423,6 +1657,20 @@ ApplyShowTable = function(data)
   local dm = data.darkMode and true or false
   pcall(function() Controls.DarkModeToggle.Boolean = dm end)
   ApplyColorMode(dm)
+
+  TcApplyFrameRate(tcFrameRate) -- also recomputes every TC cue's targetFrames/targetString
+  TcSetSource(tcSource)
+  pcall(function()
+    Controls.TcFrameRate.String = tostring(TcFrameRate)
+    Controls.TcSourceToggle.Boolean = TcExternalSource
+    Controls.TcRunToggle.Boolean = false
+  end)
+  TcResetClock()
+  TcRearmAllCues()
+  TcRefreshSelectedCueChoices()
+  SelectedTcCueIndex = 1
+  PushSelectedTcCueToEditor()
+
   Loading = wasLoading
 end
 
@@ -1917,8 +2165,9 @@ EngagePanic = function()
   -- Same "halt in place, don't rewind" semantics as the old momentary Panic
   -- button: clears active/played highlighting but leaves Current/NextCueIndex
   -- untouched. Also stops any cue currently mid-"wait" so nothing queued
-  -- fires late.
+  -- fires late -- Live Show and Timecode Show alike.
   CancelAllPendingWaits()
+  TcCancelAllPendingWaits()
   for i = 1, MaxCues do
     Cues[i].state = "idle"
     RefreshCueButtonColor(i)
@@ -1972,6 +2221,439 @@ ApplyColorMode = function(isDark)
     Controls.StatusLed.Color = StateColors[CurrentStatusKind] or StateColors.ready
     Controls.ErrorLed.Color = ErrorActive and StateColors.error or StateColors.neutral
   end)
+end
+
+--=============================================================================
+-- Timecode Show: frame math
+-- Deliberately lenient rather than rejecting on out-of-range minutes/
+-- seconds/frames (e.g. after a frame-rate change makes a previously-valid
+-- frame number too high) -- clamps into range and re-normalizes, instead of
+-- leaving a cue with a target time that can now never be parsed. Only a
+-- genuinely malformed string (wrong shape entirely) is rejected (nil).
+-- No drop-frame support -- see README.
+--=============================================================================
+TcStringToFrames = function(str, fps)
+  if type(str) ~= "string" then return nil end
+  local h, m, s, f = str:match("^%s*(%d+):(%d+):(%d+):(%d+)%s*$")
+  if not h then return nil end
+  h, m, s, f = tonumber(h), tonumber(m), tonumber(s), tonumber(f)
+  if m > 59 then m = 59 end
+  if s > 59 then s = 59 end
+  if f > fps - 1 then f = fps - 1 end
+  return ((h * 3600 + m * 60 + s) * fps) + f
+end
+
+TcFramesToString = function(totalFrames, fps)
+  if not totalFrames or totalFrames < 0 then totalFrames = 0 end
+  totalFrames = math.floor(totalFrames)
+  local f = totalFrames % fps
+  local totalSeconds = math.floor(totalFrames / fps)
+  local s = totalSeconds % 60
+  local totalMinutes = math.floor(totalSeconds / 60)
+  local m = totalMinutes % 60
+  local h = math.floor(totalMinutes / 60)
+  return string.format("%02d:%02d:%02d:%02d", h, m, s, f)
+end
+
+-- Re-derives every TC cue's targetFrames from its stored targetString under
+-- the CURRENT TcFrameRate -- called whenever the frame rate changes, since
+-- frame counts aren't comparable across rates.
+TcRecomputeAllTargets = function()
+  for i = 1, MaxTcCues do
+    local c = TcCues[i]
+    local frames = TcStringToFrames(c.targetString, TcFrameRate)
+    if frames then
+      c.targetFrames = frames
+      c.targetString = TcFramesToString(frames, TcFrameRate)
+    else
+      c.targetFrames = 0
+      c.targetString = "00:00:00:00"
+    end
+    RefreshTcCueButtonColor(i)
+  end
+end
+
+--=============================================================================
+-- Timecode Show: the clock itself
+-- SOFT-SYNC ONLY -- see README's "Timecode Show" section. Internal mode
+-- counts Timer ticks (1 tick = 1 frame); it is not locked to any external
+-- reference and will drift over a long show. External mode just relays
+-- whatever arrives on the TcInput pin -- this plugin cannot decode real
+-- LTC/MTC itself (that needs DSP, not Lua), so accuracy there is entirely
+-- the upstream device's.
+--=============================================================================
+TcTickHandler = function()
+  TcFrameCounter = TcFrameCounter + 1
+  local s = TcFramesToString(TcFrameCounter, TcFrameRate)
+  pcall(function()
+    Controls.TcCurrentText.String = s
+    Controls.TcOutput.String = s
+  end)
+  EvaluateTcCues()
+end
+
+TcApplyFrameRate = function(fps)
+  if fps ~= 24 and fps ~= 25 and fps ~= 30 then fps = 30 end
+  local wasTicking = TcRunning and not TcExternalSource
+  if wasTicking then pcall(function() TcTimer:Stop() end) end
+  TcFrameRate = fps
+  TcRecomputeAllTargets()
+  pcall(function() Controls.TcCurrentText.String = TcFramesToString(TcFrameCounter, TcFrameRate) end)
+  if wasTicking then pcall(function() TcTimer:Start(1 / TcFrameRate) end) end
+end
+
+-- Keeps TcStatusText in sync; called after any change to source/running.
+local function TcRefreshStatusText()
+  pcall(function()
+    Controls.TcStatusText.String = TcExternalSource and "External (TC Input pin)" or (TcRunning and "Running (Internal)" or "Stopped (Internal)")
+  end)
+end
+
+TcSetRunning = function(running)
+  TcRunning = running and true or false
+  if TcTimer then
+    if TcRunning and not TcExternalSource then
+      pcall(function() TcTimer:Start(1 / TcFrameRate) end)
+    else
+      pcall(function() TcTimer:Stop() end)
+    end
+  end
+  TcRefreshStatusText()
+end
+
+TcSetSource = function(external)
+  TcExternalSource = external and true or false
+  if TcTimer then
+    if TcExternalSource then
+      pcall(function() TcTimer:Stop() end)
+    elseif TcRunning then
+      pcall(function() TcTimer:Start(1 / TcFrameRate) end)
+    end
+  end
+  TcRefreshStatusText()
+end
+
+TcResetClock = function()
+  TcFrameCounter = 0
+  local s = TcFramesToString(0, TcFrameRate)
+  pcall(function()
+    Controls.TcCurrentText.String = s
+    Controls.TcOutput.String = s
+  end)
+  EvaluateTcCues() -- re-arms anything whose target is now ahead of 0 again
+end
+
+TcRearmAllCues = function()
+  for i = 1, MaxTcCues do
+    local c = TcCues[i]
+    c.fired = false
+    if c.state == "fired" or c.state == "error" then c.state = "idle" end
+    RefreshTcCueButtonColor(i)
+  end
+end
+
+--=============================================================================
+-- Timecode Show: cue evaluation, coloring, logging
+--=============================================================================
+-- A ">=" threshold check, not exact equality -- a cue's target can never be
+-- silently skipped even if TcFrameCounter jumps past it in one tick (a lag
+-- spike), only fired late. If TC moves backward past a cue's target (an
+-- external rewind, or a manual Reset Clock), it re-arms automatically so it
+-- fires again next time TC passes it -- see README for why this, not exact
+-- frame matching, is what makes this reliable enough to use despite jitter.
+EvaluateTcCues = function()
+  for i = 1, MaxTcCues do
+    local c = TcCues[i]
+    if c.enabled then
+      if TcFrameCounter < c.targetFrames then
+        if c.fired then
+          c.fired = false
+          if c.state == "fired" then c.state = "idle" end
+          RefreshTcCueButtonColor(i)
+        end
+      elseif not c.fired and not c.firing then
+        TcFireCueNow(i)
+      end
+    end
+  end
+end
+
+RefreshTcCueButtonColor = function(i)
+  local c = TcCues[i]
+  local color = StateColors.neutral
+  if c.state == "firing" then color = StateColors.firing
+  elseif c.state == "error" then color = StateColors.error
+  elseif c.state == "fired" then color = StateColors.played
+  elseif c.enabled then color = StateColors.armed
+  end
+  pcall(function()
+    Controls.TcCueButton[i].Color = color
+    Controls.TcCueButton[i].Legend = (c.targetString ~= "" and c.targetString) or "--:--:--:--"
+  end)
+end
+
+LogTcCueFire = function(i, success, statusLabel)
+  local c = TcCues[i]
+  local label = statusLabel or (success and "OK" or "ERROR")
+  local line = string.format("%s  TC %s  Cue %d: %s  %s", os.date("%H:%M:%S"), c.targetString or "", i, c.name, label)
+  table.insert(TcCueLog, 1, line)
+  while #TcCueLog > CUE_LOG_MAX do table.remove(TcCueLog) end
+  pcall(function() Controls.TcCueLogText.String = table.concat(TcCueLog, "\n") end)
+  if DebugOn then print("[CueEngine][TC] " .. line) end
+end
+
+-- Mirrors CancelAllPendingWaits for the TC show -- stops any TC cue
+-- currently mid-"wait" (its queued remainder never fires) without touching
+-- its already-fired flag, so it isn't silently retried this same pass.
+-- Called from STOP ALL / E-Stop alongside the Live Show's own version.
+TcCancelAllPendingWaits = function()
+  for idx = 1, MaxTcCues do
+    local c = TcCues[idx]
+    if c.firing then
+      if c.pendingTimer then pcall(function() c.pendingTimer:Stop() end) end
+      c.pendingTimer = nil
+      c.firing = false
+      c.state = "idle"
+      RefreshTcCueButtonColor(idx)
+      LogTcCueFire(idx, false, "CANCELLED")
+    end
+  end
+end
+
+--=============================================================================
+-- Timecode Show: firing (parallel to DispatchCueActions/FinishCueFire/
+-- FireCueNow -- kept separate rather than parameterizing the Live Show
+-- versions, same reasoning as Action Groups: a TC cue firing can never
+-- accidentally touch Cues/ActiveCueIndex or vice versa). Reuses
+-- BuildExpandedActionList/DispatchAction/CallAfter as-is -- those already
+-- take a plain actions array and don't reference Cues at all.
+--=============================================================================
+TcFinishCueFire = function(i, errors)
+  local c = TcCues[i]
+  c.firing = false
+  c.pendingTimer = nil
+  if #errors > 0 then
+    c.state = "error"
+    SetError(string.format("TC Cue %d (%s): %s", i, c.name, table.concat(errors, " | ")))
+  else
+    c.state = "fired"
+  end
+  RefreshTcCueButtonColor(i)
+  LogTcCueFire(i, #errors == 0)
+end
+
+TcDispatchCueActions = function(i, expanded, startIndex, errors)
+  for idx = startIndex, #expanded do
+    local act = expanded[idx]
+    if act.type == "wait" then
+      local seconds = tonumber(act.value) or 0
+      if seconds > 0 then
+        TcCues[i].pendingTimer = CallAfter(function()
+          TcDispatchCueActions(i, expanded, idx + 1, errors)
+        end, seconds)
+        return
+      end
+    elseif act.type == "error_marker" then
+      table.insert(errors, act.message)
+    else
+      local ok, err = DispatchAction(act)
+      if not ok then
+        table.insert(errors, string.format("%s (%s): %s", act.sourceLabel or "Action", act.type, tostring(err)))
+      end
+    end
+  end
+  TcFinishCueFire(i, errors)
+end
+
+-- Called both by EvaluateTcCues (automatic, TC-driven) and by TcCueButton
+-- (manual test-fire, which deliberately ignores `enabled` -- see README --
+-- so a disabled TC cue can still be tested on the bench). E-Stop blocks
+-- both paths identically and without marking the cue fired, so an
+-- auto-triggered cue blocked by E-Stop retries on the very next tick once
+-- E-Stop clears, instead of being silently skipped.
+TcFireCueNow = function(i)
+  if PanicEngaged then return end
+  local c = TcCues[i]
+  if c.firing then return end
+  c.firing = true
+  c.fired = true
+  c.state = "firing"
+  RefreshTcCueButtonColor(i)
+  local expanded = BuildExpandedActionList(c.actions, MaxActions, "TC Action ", {}, 0)
+  TcDispatchCueActions(i, expanded, 1, {})
+end
+
+--=============================================================================
+-- Timecode Show: TC Cue editor -- select-one-and-edit, exact mirror of the
+-- Action Groups editor functions above (own Tc* controls, own state, never
+-- shares controls with a cue's or a group's editor). Every one of these
+-- guards on MaxTcCues <= 0 and returns immediately, since GetControls only
+-- declares the Tc* editor controls when Max TC Cues > 0.
+--=============================================================================
+TcRefreshActionTargetChoices = function(a)
+  if MaxTcCues <= 0 then return end
+  local t = TcCues[SelectedTcCueIndex].actions[a].type
+  pcall(function()
+    if t == "udp_send" then
+      Controls.TcActionTarget[a].Choices = UdpTargetNameList()
+    elseif t == "player_trigger" or t == "named_control_set" then
+      Controls.TcActionTarget[a].Choices = DeviceNameList()
+    elseif t == "group" then
+      Controls.TcActionTarget[a].Choices = ActionGroupNameList()
+    else
+      Controls.TcActionTarget[a].Choices = {}
+    end
+  end)
+end
+
+TcRefreshActionControlChoices = function(a)
+  if MaxTcCues <= 0 then return end
+  local act = TcCues[SelectedTcCueIndex].actions[a]
+  if act.type ~= "player_trigger" and act.type ~= "named_control_set" then return end
+  local compName = ResolveDeviceComponent(act.target)
+  if not compName or compName == "" then return end
+  local comp = GetComponent(compName)
+  if not comp then return end
+  pcall(function()
+    local names = {}
+    for _, ctrl in ipairs(Component.GetControls(comp)) do
+      if ctrl.Name then table.insert(names, ctrl.Name) end
+    end
+    table.sort(names)
+    Controls.TcActionControl[a].Choices = names
+  end)
+end
+
+TcRefreshVisibleActionChoices = function()
+  if MaxTcCues <= 0 then return end
+  local c = TcCues[SelectedTcCueIndex]
+  for a = 1, c.activeActions do
+    TcRefreshActionTargetChoices(a)
+  end
+end
+
+TcRefreshActionValueEditor = function(a)
+  if MaxTcCues <= 0 then return end
+  local act = TcCues[SelectedTcCueIndex].actions[a]
+  local showText, showBool = false, false
+  if act.type == "udp_send" or act.type == "wait" then
+    showText = true
+  elseif act.type == "named_control_set" then
+    local compName = ResolveDeviceComponent(act.target)
+    local desc = nil
+    if compName and compName ~= "" and act.control ~= "" then
+      desc = FindControlDescriptor(compName, act.control)
+    end
+    if desc and desc.Type == "Boolean" then
+      showBool = true
+    elseif desc and desc.Type == "Trigger" then
+      showText, showBool = false, false
+    else
+      showText = true
+    end
+  end
+  pcall(function()
+    Controls.TcActionValue[a].IsInvisible = not showText
+    Controls.TcActionValueBool[a].IsInvisible = not showBool
+    if showBool then
+      local mode, data = ParseValueSpec(act.value)
+      local boolVal = (mode == "boolean" and data) or false
+      Controls.TcActionValueBool[a].Boolean = boolVal
+      Controls.TcActionValueBool[a].Legend = boolVal and "TRUE" or "FALSE"
+      local normalized = boolVal and "B:true" or "B:false"
+      if act.value ~= normalized then
+        act.value = normalized
+        if not Loading then MarkDirty(); SaveShowData() end
+      end
+    end
+  end)
+end
+
+TcRefreshSelectedCueChoices = function()
+  if MaxTcCues <= 0 then return end
+  local list = {}
+  for i = 1, MaxTcCues do table.insert(list, string.format("%d: %s", i, TcCues[i].name)) end
+  pcall(function() Controls.SelectedTcCue.Choices = list end)
+end
+
+TcRefreshActionRowVisibility = function()
+  if MaxTcCues <= 0 then return end
+  local c = TcCues[SelectedTcCueIndex]
+  for a = 1, MaxActions do
+    local visible = a <= c.activeActions
+    pcall(function()
+      Controls.TcActionType[a].IsInvisible = not visible
+      Controls.TcActionTarget[a].IsInvisible = not visible
+      Controls.TcActionControl[a].IsInvisible = not visible
+      Controls.TcActionMoveUp[a].IsInvisible = not visible
+      Controls.TcActionMoveDown[a].IsInvisible = not visible
+      Controls.TcActionRemove[a].IsInvisible = not visible
+    end)
+    if visible then
+      TcRefreshActionValueEditor(a)
+      pcall(function()
+        Controls.TcActionMoveUp[a].IsDisabled = (a <= 1)
+        Controls.TcActionMoveDown[a].IsDisabled = (a >= c.activeActions)
+      end)
+    else
+      pcall(function()
+        Controls.TcActionValue[a].IsInvisible = true
+        Controls.TcActionValueBool[a].IsInvisible = true
+      end)
+    end
+  end
+  pcall(function() Controls.AddTcActionButton.IsDisabled = (c.activeActions >= MaxActions) end)
+end
+
+TcMoveActionUp = function(a)
+  if MaxTcCues <= 0 or a <= 1 then return end
+  local acts = TcCues[SelectedTcCueIndex].actions
+  acts[a], acts[a - 1] = acts[a - 1], acts[a]
+  PushSelectedTcCueToEditor()
+  MarkDirty(); SaveShowData()
+end
+
+TcMoveActionDown = function(a)
+  if MaxTcCues <= 0 then return end
+  local c = TcCues[SelectedTcCueIndex]
+  if a >= c.activeActions then return end
+  local acts = c.actions
+  acts[a], acts[a + 1] = acts[a + 1], acts[a]
+  PushSelectedTcCueToEditor()
+  MarkDirty(); SaveShowData()
+end
+
+PushSelectedTcCueToEditor = function()
+  if MaxTcCues <= 0 then return end
+  local c = TcCues[SelectedTcCueIndex]
+  pcall(function()
+    Controls.SelectedTcCue.String = string.format("%d: %s", SelectedTcCueIndex, c.name)
+    Controls.TcCueEditName.String = c.name
+    Controls.TcCueEditTime.String = c.targetString
+    Controls.TcCueEditEnabled.Boolean = c.enabled
+  end)
+  for a = 1, MaxActions do
+    local act = c.actions[a]
+    pcall(function()
+      Controls.TcActionType[a].String = act.type
+      Controls.TcActionTarget[a].String = act.target
+      Controls.TcActionControl[a].String = act.control
+      Controls.TcActionValue[a].String = act.value
+    end)
+    TcRefreshActionTargetChoices(a)
+    TcRefreshActionControlChoices(a)
+  end
+  TcRefreshActionRowVisibility()
+end
+
+SelectTcCue = function(i)
+  if MaxTcCues <= 0 then return end
+  if i < 1 or i > MaxTcCues then return end
+  SelectedTcCueIndex = i
+  local wasLoading = Loading
+  Loading = true
+  PushSelectedTcCueToEditor()
+  Loading = wasLoading
 end
 
 --=============================================================================
@@ -2317,6 +2999,7 @@ end
 Controls.StopAllButton.EventHandler = function()
   local errs = StopAllPlayers()
   CancelAllPendingWaits()
+  TcCancelAllPendingWaits()
   if #errs > 0 then
     SetError("Stop-all errors: " .. table.concat(errs, " | "))
   else
@@ -2703,6 +3386,201 @@ if MaxActionGroups > 0 then
   end
 end
 
+--=============================================================================
+-- Timecode Show: transport controls
+--=============================================================================
+pcall(function() Controls.TcFrameRate.Choices = { "24", "25", "30" } end)
+
+Controls.TcFrameRate.EventHandler = function(ctl)
+  if Loading then return end
+  local fps = tonumber(ctl.String)
+  if fps ~= 24 and fps ~= 25 and fps ~= 30 then
+    ctl.String = tostring(TcFrameRate) -- reject, revert to last valid rate
+    return
+  end
+  TcApplyFrameRate(fps)
+  MarkDirty(); SaveShowData()
+end
+
+Controls.TcSourceToggle.EventHandler = function(ctl)
+  if Loading then return end
+  TcSetSource(ctl.Boolean)
+  MarkDirty(); SaveShowData()
+end
+
+Controls.TcRunToggle.EventHandler = function(ctl)
+  if Loading then return end
+  TcSetRunning(ctl.Boolean)
+end
+
+Controls.TcResetClockButton.EventHandler = function()
+  if Loading then return end
+  TcResetClock()
+end
+
+Controls.TcRearmButton.EventHandler = function()
+  if Loading then return end
+  TcRearmAllCues()
+end
+
+-- External TC in: whatever's on the pin becomes CurrentTC immediately,
+-- regardless of Run/Stop (External mode isn't gated by TcRunToggle -- it's
+-- always just relaying the pin). Malformed input is ignored outright (no
+-- revert needed -- this is a pin, not something an operator edits).
+Controls.TcInput.EventHandler = function(ctl)
+  if Loading then return end
+  if not TcExternalSource then return end
+  local frames = TcStringToFrames(ctl.String, TcFrameRate)
+  if not frames then return end
+  TcFrameCounter = frames
+  local s = TcFramesToString(frames, TcFrameRate)
+  pcall(function()
+    Controls.TcCurrentText.String = s
+    Controls.TcOutput.String = s
+  end)
+  EvaluateTcCues()
+end
+
+if MaxTcCues > 0 then
+  for i = 1, MaxTcCues do
+    TcCues[i] = {
+      name = "TC Cue " .. i, targetString = "00:00:00:00", targetFrames = 0,
+      enabled = false, fired = false, state = "idle", activeActions = 0, actions = {},
+      firing = false, pendingTimer = nil, -- transient dispatch state, never persisted
+    }
+    for a = 1, MaxActions do
+      TcCues[i].actions[a] = { type = "none", target = "", control = "", value = "" }
+    end
+    local tcIdx = i -- capture
+    Controls.TcCueButton[tcIdx].EventHandler = function()
+      TcFireCueNow(tcIdx) -- manual test-fire; deliberately bypasses `enabled` -- see README
+    end
+  end
+
+  Controls.SelectedTcCue.EventHandler = function(ctl)
+    if Loading then return end
+    local numStr = ctl.String:match("^(%d+):")
+    local i = tonumber(numStr)
+    if i then SelectTcCue(i) end
+  end
+
+  Controls.TcCueEditName.EventHandler = function(ctl)
+    if Loading then return end
+    local c = TcCues[SelectedTcCueIndex]
+    if Controls.LockToggle.Boolean then ctl.String = c.name; return end
+    c.name = ctl.String
+    TcRefreshSelectedCueChoices()
+    pcall(function() Controls.SelectedTcCue.String = string.format("%d: %s", SelectedTcCueIndex, ctl.String) end)
+    MarkDirty(); SaveShowData()
+  end
+
+  Controls.TcCueEditTime.EventHandler = function(ctl)
+    if Loading then return end
+    local c = TcCues[SelectedTcCueIndex]
+    if Controls.LockToggle.Boolean then ctl.String = c.targetString; return end
+    local frames = TcStringToFrames(ctl.String, TcFrameRate)
+    if frames then
+      c.targetFrames = frames
+      c.targetString = TcFramesToString(frames, TcFrameRate)
+      ctl.String = c.targetString
+      RefreshTcCueButtonColor(SelectedTcCueIndex)
+      MarkDirty(); SaveShowData()
+    else
+      ctl.String = c.targetString -- reject malformed input, revert
+    end
+  end
+
+  Controls.TcCueEditEnabled.EventHandler = function(ctl)
+    if Loading then return end
+    TcCues[SelectedTcCueIndex].enabled = ctl.Boolean
+    RefreshTcCueButtonColor(SelectedTcCueIndex)
+    MarkDirty(); SaveShowData()
+  end
+
+  Controls.AddTcActionButton.EventHandler = function()
+    if Loading then return end
+    if Controls.LockToggle.Boolean then return end
+    local c = TcCues[SelectedTcCueIndex]
+    if c.activeActions < MaxActions then
+      c.activeActions = c.activeActions + 1
+      TcRefreshActionRowVisibility()
+      MarkDirty(); SaveShowData()
+    end
+  end
+
+  for a = 1, MaxActions do
+    local slotIdx = a -- capture per-iteration value for the closures below
+
+    pcall(function() Controls.TcActionType[slotIdx].Choices = ActionTypes end)
+
+    Controls.TcActionType[slotIdx].EventHandler = function(ctl)
+      if Loading then return end
+      local c = TcCues[SelectedTcCueIndex]
+      if Controls.LockToggle.Boolean then ctl.String = c.actions[slotIdx].type; return end
+      c.actions[slotIdx].type = ClampActionType(ctl.String)
+      TcRefreshActionTargetChoices(slotIdx)
+      TcRefreshActionValueEditor(slotIdx)
+      MarkDirty(); SaveShowData()
+    end
+    Controls.TcActionTarget[slotIdx].EventHandler = function(ctl)
+      if Loading then return end
+      local c = TcCues[SelectedTcCueIndex]
+      if Controls.LockToggle.Boolean then ctl.String = c.actions[slotIdx].target; return end
+      c.actions[slotIdx].target = ctl.String
+      TcRefreshActionControlChoices(slotIdx)
+      TcRefreshActionValueEditor(slotIdx)
+      MarkDirty(); SaveShowData()
+    end
+    Controls.TcActionControl[slotIdx].EventHandler = function(ctl)
+      if Loading then return end
+      local c = TcCues[SelectedTcCueIndex]
+      if Controls.LockToggle.Boolean then ctl.String = c.actions[slotIdx].control; return end
+      c.actions[slotIdx].control = ctl.String
+      TcRefreshActionValueEditor(slotIdx)
+      MarkDirty(); SaveShowData()
+    end
+    Controls.TcActionValue[slotIdx].EventHandler = function(ctl)
+      if Loading then return end
+      local c = TcCues[SelectedTcCueIndex]
+      if Controls.LockToggle.Boolean then ctl.String = c.actions[slotIdx].value; return end
+      c.actions[slotIdx].value = ctl.String
+      MarkDirty(); SaveShowData()
+    end
+    Controls.TcActionValueBool[slotIdx].EventHandler = function(ctl)
+      if Loading then return end
+      local c = TcCues[SelectedTcCueIndex]
+      if Controls.LockToggle.Boolean then
+        local mode, data = ParseValueSpec(c.actions[slotIdx].value)
+        ctl.Boolean = (mode == "boolean" and data) or false
+        return
+      end
+      c.actions[slotIdx].value = ctl.Boolean and "B:true" or "B:false"
+      ctl.Legend = ctl.Boolean and "TRUE" or "FALSE"
+      MarkDirty(); SaveShowData()
+    end
+    Controls.TcActionRemove[slotIdx].EventHandler = function()
+      if Loading then return end
+      if Controls.LockToggle.Boolean then return end
+      local c = TcCues[SelectedTcCueIndex]
+      for k = slotIdx, MaxActions - 1 do c.actions[k] = c.actions[k + 1] end
+      c.actions[MaxActions] = { type = "none", target = "", control = "", value = "" }
+      if c.activeActions > 0 then c.activeActions = c.activeActions - 1 end
+      PushSelectedTcCueToEditor()
+      MarkDirty(); SaveShowData()
+    end
+    Controls.TcActionMoveUp[slotIdx].EventHandler = function()
+      if Loading then return end
+      if Controls.LockToggle.Boolean then return end
+      TcMoveActionUp(slotIdx)
+    end
+    Controls.TcActionMoveDown[slotIdx].EventHandler = function()
+      if Loading then return end
+      if Controls.LockToggle.Boolean then return end
+      TcMoveActionDown(slotIdx)
+    end
+  end
+end
+
 for i = 1, MaxDevices do
   Devices[i] = { name = "Device " .. i, component = "" }
   local devIdx = i -- capture
@@ -2712,6 +3590,7 @@ for i = 1, MaxDevices do
     if Controls.LockToggle.Boolean then ctl.String = Devices[devIdx].name; return end
     Devices[devIdx].name = ctl.String
     RefreshVisibleActionChoices()
+    TcRefreshVisibleActionChoices()
     MarkDirty(); SaveShowData()
   end
   Controls.DeviceComponent[devIdx].EventHandler = function(ctl)
@@ -2720,6 +3599,7 @@ for i = 1, MaxDevices do
     Devices[devIdx].component = ctl.String
     RebuildComponentCache()
     RefreshVisibleActionChoices()
+    TcRefreshVisibleActionChoices()
     MarkDirty(); SaveShowData()
   end
 end
@@ -2732,6 +3612,7 @@ for i = 1, NumUdp do
     if Controls.LockToggle.Boolean then ctl.String = UdpTargets[i].name; return end
     UdpTargets[i].name = ctl.String
     RefreshVisibleActionChoices()
+    TcRefreshVisibleActionChoices()
     MarkDirty(); SaveShowData()
   end
   Controls.UdpTargetIp[i].EventHandler = function(ctl)
@@ -2754,6 +3635,13 @@ end
 Init = function()
   Loading = true
 
+  -- Created here (before LoadShowData/ApplyShowTable might touch TC state)
+  -- but only ever :Start()'d by TcSetRunning/TcSetSource/TcApplyFrameRate,
+  -- and only once an operator turns RUN on -- TcRunning is never persisted,
+  -- so it's always false through the rest of Init.
+  TcTimer = Timer.New()
+  TcTimer.EventHandler = TcTickHandler
+
   local loaded = LoadShowData()
   if not loaded then
     for i = 1, MaxDevices do
@@ -2770,6 +3658,16 @@ Init = function()
     RefreshSelectedGroupChoices()
     SelectedGroupIndex = 1
     PushSelectedGroupToEditor()
+    TcApplyFrameRate(30)
+    TcSetSource(false)
+    pcall(function()
+      Controls.TcFrameRate.String = tostring(TcFrameRate)
+      Controls.TcSourceToggle.Boolean = TcExternalSource
+      Controls.TcRunToggle.Boolean = false
+    end)
+    TcRefreshSelectedCueChoices()
+    SelectedTcCueIndex = 1
+    PushSelectedTcCueToEditor()
     SaveShowData()
   end
 
@@ -2784,6 +3682,13 @@ Init = function()
   -- Current/Next Cue Notes views in one place (also already run once inside
   -- ApplyShowTable for the `loaded` path -- idempotent, harmless to repeat).
   ResetPlaybackState()
+
+  -- Timecode Show playback position (clock + fired flags) is never
+  -- persisted -- always starts clean at boot, same reasoning as
+  -- ResetPlaybackState above (also already run once inside ApplyShowTable
+  -- for the `loaded` path -- idempotent, harmless to repeat).
+  TcResetClock()
+  TcRearmAllCues()
 
   -- E-Stop state is NOT persisted (a fresh boot always starts un-latched,
   -- like a physical E-stop relay) -- but if the schematic input pin is
@@ -2804,7 +3709,7 @@ Init = function()
   StartPingHeartbeat()
 
   Loading = false
-  dbg("Init complete: %d cues, %d actions/cue, %d devices, %d action groups, %d UDP targets", MaxCues, MaxActions, MaxDevices, MaxActionGroups, NumUdp)
+  dbg("Init complete: %d cues, %d actions/cue, %d devices, %d action groups, %d UDP targets, %d TC cues", MaxCues, MaxActions, MaxDevices, MaxActionGroups, NumUdp, MaxTcCues)
 end
 
 Init()

@@ -23,7 +23,7 @@ extensions (`UdpSocket`, `Component`, `Controls`, `Timer`, `rapidjson`,
 2. Drag it onto the design canvas.
 3. Set its Properties (see below) to size the show, then wire up cues.
 
-The component has four pages (visible as tabs at the top of its
+The component has five pages (visible as tabs at the top of its
 properties/control panel in Designer):
 
 - **Live Show** — the compact operator view: show/lock strip, status bar,
@@ -33,24 +33,29 @@ properties/control panel in Designer):
   one screen (~920px wide).
 - **Devices** — a curated list of Q-SYS components ("Devices") and UDP
   targets. This is the only place the full, raw list of every component in
-  your design is shown; everywhere else (the Show Editor's/Action Groups'
-  action Target dropdown) only sees the friendly names you define here.
-  Keeps the editor from being flooded with every gain block and router in
-  the design.
+  your design is shown; everywhere else (the Show Editor's/Action Groups'/
+  Timecode Show's action Target dropdown) only sees the friendly names you
+  define here. Keeps the editor from being flooded with every gain block
+  and router in the design.
 - **Action Groups** — pick **one** reusable group from a dropdown and edit
   its actions (same Type/Target/Control/Value/Move Up/Down/Remove editor as
   a cue's own actions, in its own bank of controls). Build a "Mute All" or
-  "Gain Reset" once here, then invoke it from any cue — or another group —
-  with a `group` action. See "Reusable Action Groups" below.
+  "Gain Reset" once here, then invoke it from any cue (or TC cue) — or
+  another group — with a `group` action. See "Reusable Action Groups" below.
 - **Show Editor** — pick **one** cue from a dropdown and edit it: name,
   color, armed, confirm-before-fire, notes, and its actions. Actions are
   revealed one at a time with **+ Add Action** (and removed with each row's
   **X** button) instead of always showing every action slot for every cue —
   so a 30-cue show with a handful of actions per cue doesn't fill the screen
   with 100+ mostly-empty rows.
+- **Timecode Show** — a SECOND, independent show, driven by timecode
+  instead of GO/the cue grid, sharing the same Devices and Action Groups as
+  the Live Show. A soft-sync clock only — not frame-accurate, no
+  drop-frame — see "Timecode Show" below before relying on it for anything
+  frame-critical.
 
 Paging is purely a Designer-canvas display choice — every control behaves
-identically regardless of which page it's shown on. All four pages share
+identically regardless of which page it's shown on. All five pages share
 one color palette (blue accent, green/amber/red for success/warning/danger)
 with card-style grouped sections and section headings.
 
@@ -66,6 +71,7 @@ with card-style grouped sections and section headings.
 | **Show Debug** | Show the Lua debug window; also gates `print()` mirroring of errors/cue-fire log lines | false | — |
 | **Logo SVG (base64, optional)** | Raw base64 of an SVG's XML, rendered top-right on every page. Empty = no logo. Design-time only — see "Optional logo" below | "" (empty) | — |
 | **Dark Background (design-time)** | Darkens the page background and title text. Design-time only, separate from the runtime DARK MODE button — see "Colors and theming" below | false | — |
+| **Max TC Cues** | Size of the Timecode Show's cue list | 16 | 0–30 |
 
 Changing any of these **resizes the control set** (`GetControls` declares a
 static, fixed-size set of controls sized only from these Properties — the
@@ -426,10 +432,119 @@ in emulation.
 > (defined on the Devices page), not a raw Q-SYS component name. A show
 > exported from an earlier build of this plugin will need its action
 > targets renamed to match configured Device names before re-importing.
-> The schema also now carries `actionGroups` (reusable Action Groups) and
-> `darkMode` (the Light/Dark Mode preference) — both are optional on
-> import: a show exported before either feature existed imports fine
-> without them (no groups, Light Mode).
+> The schema also now carries `actionGroups` (reusable Action Groups),
+> `darkMode` (the Light/Dark Mode preference), and `tc` (the Timecode
+> Show's cues, frame rate, and source) — all optional on import: a show
+> exported before any of these features existed imports fine without them
+> (no groups, Light Mode, no TC cues).
+
+## Timecode Show
+
+A **second, independent show**, on its own page, driven by timecode
+instead of GO/the cue grid — build a show that fires by hand on the Live
+Show page, a show that follows a timecode track on this page, or both at
+once, side by side. TC cues still draw their action Targets from the same
+**Devices** and **Action Groups** as the Live Show, so nothing has to be
+set up twice.
+
+**Read this before you rely on it for anything time-critical.** This is a
+**soft-sync clock**, not a broadcast-grade one — see "Reliability" below
+for exactly what that means and why it's still trustworthy for what it's
+built for.
+
+### Setting it up
+
+1. **Frame Rate**: 24, 25, or 30 fps — **no drop-frame** (see Reliability).
+   Changing it re-derives every TC cue's stored target time under the new
+   rate; it doesn't need to match any real external source's rate exactly,
+   since Internal mode just counts ticks (frames), not a real time base.
+2. **Source**: **Internal** (this plugin runs its own free-running clock —
+   RUN / RESET CLOCK) or **External** (the **TC Input** schematic pin drives
+   the clock instead — whatever arrives there, "HH:MM:SS:FF", becomes the
+   current TC immediately). Switching to External stops the internal clock
+   from ticking; switching back to Internal resumes it if RUN is still on.
+3. **TC Input / TC Output** (schematic pins, not on-canvas controls — wire
+   them from the component's block, same as any other pin): TC Input feeds
+   an external TC source (a real LTC/MTC decoder, another show-control
+   system) into this plugin; TC Output continuously republishes whatever
+   this plugin currently considers "current TC" (Internal-generated or
+   passed through from TC Input) for anything downstream that wants to
+   follow it.
+4. On the page's cue list: press a slot to pick it, set its **Target Time**
+   (`HH:MM:SS:FF`) and **Enabled** (only Enabled cues auto-fire — this is a
+   deliberate gate, off by default, so a freshly-added TC cue can't
+   surprise-fire while you're still building it), then build its actions
+   exactly like a Live Show cue's (**+ Add Action**, Type/Target/Control/
+   Value, `wait`, and `group` all work identically).
+5. Every TC cue's grid button is also a **manual test-fire** button —
+   pressing it fires that cue's actions immediately, **regardless of
+   Enabled**, so you can bench-test a cue's actions without waiting for the
+   clock (or building the whole TC track first).
+
+**RESET CLOCK** zeroes the clock back to `00:00:00:00`. **REARM CUES**
+clears every TC cue's "already fired" flag without touching the clock —
+useful if you want to replay from the current TC position without
+rewinding. Both are separate from **STOP ALL** and **E-STOP**, which both
+still apply to the Timecode Show exactly as they do the Live Show: they
+cancel any TC cue currently mid-`wait`, and E-Stop blocks all TC cue firing
+(automatic and manual) until **CLEAR E-STOP** — a TC cue blocked by E-Stop
+retries automatically on the very next tick once it's cleared, with no
+extra step needed.
+
+### Reliability
+
+Q-SYS Lua is not a real-time environment — control scripts run on the
+Core's control-plane scheduler alongside everything else, with no
+guaranteed low-jitter execution. That shapes this feature's design and its
+honest limits:
+
+- **Internal clock**: a `Timer` ticking once per frame (real Q-SYS Timers
+  auto-repeat after `:Start()` until `:Stop()`'d) — 1 tick = 1 frame
+  counted. It is **not locked to any external reference** and will drift
+  from real elapsed time over a long show; individual tick timing can also
+  jitter under system load. This is a soft, local clock for cueing off a
+  rough timeline (music, a rehearsal run-through), not a broadcast
+  reference.
+- **Why it's still reliable for cue firing despite the jitter**: a TC cue
+  fires on a **"has TC reached or passed its target" check**, not an exact
+  frame-equality match. Even if a lag spike makes the clock jump straight
+  past a cue's target frame in one tick, that check still catches it and
+  fires the cue — just slightly late, **never silently skipped**. This is
+  the actual guarantee: cues always fire, in order, eventually — not that
+  they fire at the exact millisecond their target time says.
+- **External TC input**: this plugin **cannot decode real LTC/MTC audio
+  itself** — that needs a DSP component, not Lua. TC Input only relays
+  whatever value another component (a real decoder, an external
+  show-control system) already decoded and pushed in as a plain
+  `"HH:MM:SS:FF"` string. Accuracy here is entirely the upstream device's
+  and however often it updates the control — this plugin adds no further
+  timing error on top of that, but also no correction for any it receives.
+- **TC Output** is the same kind of plain string, at whatever rate this
+  plugin's own clock updates (once per frame in Internal mode) — it is
+  **not** a real LTC/MTC signal a broadcast device could chase; it's for
+  feeding another Lua-driven or logic-driven part of the same Q-SYS design.
+- **No drop-frame**: only integer 24/25/30 fps are offered. Real 29.97
+  drop-frame timecode's frame-number-skipping math is easy to get subtly
+  wrong without real broadcast hardware to validate against, so it's
+  deliberately not implemented — treat a 29.97 non-drop source as 30fps
+  here (see "Assumptions flagged for review").
+
+**Bottom line**: use this for a TC-driven cue list where "fires when TC
+reaches this point, reliably and in order" is what you need — a music or
+video timeline you're cueing lighting/AV off of, a rehearsal aid, a
+TC-triggered backup path alongside hand-fired cues. Don't use it where you
+need frame-locked, broadcast-grade sync — that requires real timecode
+hardware (an LTC generator/reader DSP component), not a Lua plugin.
+
+### Persistence
+
+Same split as the Live Show: **authored content** (every TC cue's name,
+target time, Enabled state, and actions) plus **setup preferences** (frame
+rate, source) are saved and restored. The **running clock position and
+every cue's fired/armed state are never persisted** — a reload or reboot
+always starts the Timecode Show at a clean `00:00:00:00` with every cue
+rearmed, the same "authored show vs. playback position" split the Live
+Show already uses (see Persistence above).
 
 ## Reliability notes
 
@@ -471,6 +586,19 @@ in emulation.
   rather than swapping which table every function reads from, so every
   existing color reference (cue grid, status LEDs, etc.) automatically
   picks up the new palette with no per-callsite changes.
+- The Timecode Show is a fully separate parallel system (`TcCues`,
+  `TcFireCueNow`/`TcDispatchCueActions`/`TcFinishCueFire`) rather than the
+  Live Show's cue machinery parameterized to also handle TC cues — same
+  reasoning as Action Groups' separate functions: a TC cue firing can never
+  touch `Cues`/`ActiveCueIndex` or vice versa, so a bug in one show can't
+  corrupt the other's state. It reuses `BuildExpandedActionList`/
+  `DispatchAction`/`CallAfter` as-is, since those already just take a plain
+  actions array and never reference the Live Show's cue state.
+- A TC cue fires on a **"TC has reached or passed its target"** check
+  (`>=`), not exact frame equality — see "Timecode Show" → "Reliability"
+  for why this, not exact matching, is what makes cue firing trustworthy
+  despite unavoidable Lua timer jitter: a cue can be fired late, but never
+  silently skipped.
 
 ## Assumptions flagged for review
 
@@ -530,6 +658,25 @@ specified:
    The `Loading`-guarded re-latch logic is defensive against that, but
    verify the E-Stop pin's behavior against real upstream hardware before
    relying on it for life-safety-adjacent use.
+6. **Timecode Show clock accuracy**: the internal clock is a `Timer`
+   ticking once per frame, with NO independent verification against real
+   Designer/Core hardware of how tightly Q-SYS's `Timer:Start(seconds)`
+   interval is actually held over a long run (drift/jitter under real
+   system load is expected, per Q-SYS Lua's general soft-real-time nature,
+   but the exact magnitude couldn't be measured outside Designer). Treat
+   Internal mode as good for rough, local cueing (see "Timecode Show" →
+   "Reliability") and verify actual drift on real hardware before trusting
+   it across a multi-hour show. External mode's accuracy is entirely
+   whatever upstream device is decoding TC and feeding the TC Input pin —
+   this plugin adds no further timing error, but also can't correct any.
+7. **No drop-frame support, by design**: only integer 24/25/30 fps are
+   offered; real 29.97 (or 23.976) drop-frame timecode is deliberately not
+   implemented, since its frame-number-skipping math is easy to get subtly
+   wrong without real broadcast hardware to validate against — better to
+   not offer it than to offer a silently-incorrect implementation. If your
+   source is 29.97 non-drop, 30fps here is the closest fit; a true
+   drop-frame source will read up to ~3.6 seconds "ahead" of real time
+   after an hour, since dropped frame numbers are never accounted for.
 
 ## Validation performed
 
@@ -584,8 +731,8 @@ invoked from a cue; a self-referencing group and a group naming a
 nonexistent group both fail the triggering cue with a specific error
 instead of hanging, looping, or crashing; and groups round-trip through
 export/import. The layout check also confirms every declared control
-appears on exactly one of the four pages (never more than one, never
-zero, except the intentionally-hidden `ShowData`).
+appears on exactly one of the five pages (never more than one, never
+zero, except the intentionally-hidden `ShowData`/`TcInput`/`TcOutput`).
 
 E-Stop is checked end-to-end too: engaging it (via the same control write
 a UI click or the input pin would produce) blocks cue firing with a clear
@@ -605,6 +752,28 @@ a couple of runtime transport button colors are checked against their
 expected values to confirm they still resolve correctly now that they're
 derived from the shared `ThemeLight` table instead of separately hardcoded.
 
+The Timecode Show is checked end-to-end using the same upgraded `Timer`
+mock (now correctly auto-repeating, matching real Q-SYS `Timer:Start()`
+semantics, rather than firing once): the internal clock is confirmed to
+tick and a TC cue to auto-fire on the exact tick its target frame is
+reached, and to not refire on subsequent ticks; resetting the clock is
+confirmed to rearm a passed cue so it fires again once TC passes it a
+second time (rewind-safe); a TC value that jumps straight past a cue's
+target in one update (simulating a lag spike or a burst of external TC) is
+confirmed to still fire it — proving the `>=` threshold design, not exact
+frame matching, is what's actually relied on; switching to External source
+is confirmed to stop the internal Timer from ticking; a TC cue's grid
+button is confirmed to manually test-fire even while Disabled, and a
+Disabled cue is confirmed to never auto-fire; E-Stop is confirmed to block
+both automatic and manual TC cue firing and to let a blocked cue retry
+automatically on the very next tick once cleared, with no special
+un-blocking step; STOP ALL is confirmed to cancel a TC cue's pending
+`wait` the same way it does a Live Show cue's; and the TC cue list, frame
+rate, and source are confirmed to round-trip through export/import while
+the clock position is confirmed to NOT resume (always reloads at
+`00:00:00:00`).
+
 It has **not** been run inside actual Q-SYS Designer or against real
 hardware — do that before a live show, per the persistence note above,
-and per the E-Stop pin caveat in "Assumptions flagged for review".
+and per the E-Stop pin and Timecode Show clock-accuracy caveats in
+"Assumptions flagged for review".
