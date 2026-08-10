@@ -50,9 +50,9 @@ properties/control panel in Designer):
   with 100+ mostly-empty rows.
 - **Timecode Show** — a SECOND, independent show, driven by timecode
   instead of GO/the cue grid, sharing the same Devices and Action Groups as
-  the Live Show. A soft-sync clock only — not frame-accurate, no
-  drop-frame — see "Timecode Show" below before relying on it for anything
-  frame-critical.
+  the Live Show. Always driven by a real TC Input schematic pin — there is
+  no internal software clock, and no drop-frame support — see "Timecode
+  Show" below.
 
 Paging is purely a Designer-canvas display choice — every control behaves
 identically regardless of which page it's shown on. All five pages share
@@ -514,28 +514,27 @@ once, side by side. TC cues still draw their action Targets from the same
 **Devices** and **Action Groups** as the Live Show, so nothing has to be
 set up twice.
 
-**Read this before you rely on it for anything time-critical.** This is a
-**soft-sync clock**, not a broadcast-grade one — see "Reliability" below
-for exactly what that means and why it's still trustworthy for what it's
-built for.
+**Read this before you rely on it for anything time-critical.** This
+plugin has **no clock of its own** — see "Reliability" below for why, and
+for exactly what that means for accuracy.
 
 ### Setting it up
 
 1. **Frame Rate**: 24, 25, or 30 fps — **no drop-frame** (see Reliability).
    Changing it re-derives every TC cue's stored target time under the new
-   rate; it doesn't need to match any real external source's rate exactly,
-   since Internal mode just counts ticks (frames), not a real time base.
-2. **Source**: **Internal** (this plugin runs its own free-running clock —
-   RUN / RESET CLOCK) or **External** (the **TC Input** schematic pin drives
-   the clock instead — whatever arrives there, "HH:MM:SS:FF", becomes the
-   current TC immediately). Switching to External stops the internal clock
-   from ticking; switching back to Internal resumes it if RUN is still on.
-3. **TC Input / TC Output** (schematic pins, not on-canvas controls — wire
-   them from the component's block, same as any other pin): TC Input feeds
-   an external TC source (a real LTC/MTC decoder, another show-control
-   system) into this plugin; TC Output continuously republishes whatever
-   this plugin currently considers "current TC" (Internal-generated or
-   passed through from TC Input) for anything downstream that wants to
+   rate; it should match whatever rate your real TC source is actually
+   running, since incoming TC is now parsed literally, not just counted.
+2. **TC Input** (a schematic pin, not an on-canvas control — wire it from
+   the component's block, same as any other pin): the **sole** source of
+   time for this page. Wire the output of a real TC-reading component (an
+   LTC/MTC decoder, another show-control system, anything that already
+   knows accurate TC) into it — whatever `"HH:MM:SS:FF"` string arrives
+   there becomes the current TC immediately, and that's what drives cue
+   firing. Nothing fires, and the clock never advances, until something is
+   actually wired in and sending values.
+3. **TC Output** (a schematic pin) continuously republishes whatever this
+   plugin currently considers "current TC" (a straight passthrough of TC
+   Input) for anything else downstream in the same design that wants to
    follow it.
 4. On the page's cue list: press a slot to pick it, set its **Target Time**
    (`HH:MM:SS:FF`) and **Enabled** (only Enabled cues auto-fire — this is a
@@ -546,7 +545,7 @@ built for.
 5. Every TC cue's grid button is also a **manual test-fire** button —
    pressing it fires that cue's actions immediately, **regardless of
    Enabled**, so you can bench-test a cue's actions without waiting for the
-   clock (or building the whole TC track first).
+   clock (or having a TC source wired in at all yet).
 
 **RESET CLOCK** zeroes the clock back to `00:00:00:00`. **REARM CUES**
 clears every TC cue's "already fired" flag without touching the clock —
@@ -555,59 +554,61 @@ rewinding. Both are separate from **STOP ALL** and **E-STOP**, which both
 still apply to the Timecode Show exactly as they do the Live Show: they
 cancel any TC cue currently mid-`wait`, and E-Stop blocks all TC cue firing
 (automatic and manual) until **CLEAR E-STOP** — a TC cue blocked by E-Stop
-retries automatically on the very next tick once it's cleared, with no
-extra step needed.
+fires as soon as the next TC value arrives once it's cleared (there's no
+internal tick to retry it on its own; the TC Input pin advancing is what
+re-checks it, same as it does everything else).
 
 ### Reliability
 
-Q-SYS Lua is not a real-time environment — control scripts run on the
-Core's control-plane scheduler alongside everything else, with no
-guaranteed low-jitter execution. That shapes this feature's design and its
-honest limits:
+An earlier build also offered an **Internal** clock — a `Timer` ticking
+once per frame, entirely inside this plugin, no external reference needed.
+**It has been removed.** Q-SYS Lua control scripts run on the Core's
+control-plane scheduler alongside everything else, with no guaranteed
+low-jitter execution — a software `Timer` tick is fundamentally a *soft*
+clock, and testing confirmed it: firing was never silently *skipped* (the
+`>=` check below saw to that), but firing *time* itself wandered under
+real load, in a way no amount of Lua-side cleverness can bound. That's
+disqualifying for a TC-driven show where operators are trusting specific
+cues to land on specific frames, so rather than ship something that
+*mostly* works, the soft clock is gone:
 
-- **Internal clock**: a `Timer` ticking once per frame (real Q-SYS Timers
-  auto-repeat after `:Start()` until `:Stop()`'d) — 1 tick = 1 frame
-  counted. It is **not locked to any external reference** and will drift
-  from real elapsed time over a long show; individual tick timing can also
-  jitter under system load. This is a soft, local clock for cueing off a
-  rough timeline (music, a rehearsal run-through), not a broadcast
-  reference.
-- **Why it's still reliable for cue firing despite the jitter**: a TC cue
-  fires on a **"has TC reached or passed its target" check**, not an exact
-  frame-equality match. Even if a lag spike makes the clock jump straight
-  past a cue's target frame in one tick, that check still catches it and
-  fires the cue — just slightly late, **never silently skipped**. This is
-  the actual guarantee: cues always fire, in order, eventually — not that
-  they fire at the exact millisecond their target time says.
-- **External TC input**: this plugin **cannot decode real LTC/MTC audio
-  itself** — that needs a DSP component, not Lua. TC Input only relays
-  whatever value another component (a real decoder, an external
-  show-control system) already decoded and pushed in as a plain
-  `"HH:MM:SS:FF"` string. Accuracy here is entirely the upstream device's
-  and however often it updates the control — this plugin adds no further
-  timing error on top of that, but also no correction for any it receives.
-- **TC Output** is the same kind of plain string, at whatever rate this
-  plugin's own clock updates (once per frame in Internal mode) — it is
-  **not** a real LTC/MTC signal a broadcast device could chase; it's for
-  feeding another Lua-driven or logic-driven part of the same Q-SYS design.
+- **TC Input pin is now the only source of time.** This plugin **cannot
+  decode real LTC/MTC audio itself** — that needs a DSP component, not
+  Lua — so it never could generate broadcast-grade TC on its own anyway.
+  What it *can* do reliably is relay, exactly and immediately, whatever
+  `"HH:MM:SS:FF"` string a real TC-reading device or component pushes onto
+  the pin. **Accuracy is now entirely the upstream source's** — this
+  plugin adds no timing error of its own on top of it, because it no
+  longer runs a clock of its own to add error with.
+- **Why cue firing is still reliable despite any jitter the upstream
+  source has**: a TC cue fires on a **"has TC reached or passed its
+  target" check**, not an exact frame-equality match. Even if the incoming
+  TC jumps straight past a cue's target frame between two updates, that
+  check still catches it and fires the cue — just slightly late, **never
+  silently skipped**. This is the actual guarantee this plugin makes:
+  cues always fire, in order, eventually — accuracy of *when* is on
+  whatever's feeding the pin.
+- **TC Output** is a straight passthrough of whatever arrived on TC
+  Input, republished for anything else downstream in the same design that
+  wants to follow it — it is **not** a real LTC/MTC signal a broadcast
+  device could chase.
 - **No drop-frame**: only integer 24/25/30 fps are offered. Real 29.97
   drop-frame timecode's frame-number-skipping math is easy to get subtly
   wrong without real broadcast hardware to validate against, so it's
   deliberately not implemented — treat a 29.97 non-drop source as 30fps
   here (see "Assumptions flagged for review").
 
-**Bottom line**: use this for a TC-driven cue list where "fires when TC
-reaches this point, reliably and in order" is what you need — a music or
-video timeline you're cueing lighting/AV off of, a rehearsal aid, a
-TC-triggered backup path alongside hand-fired cues. Don't use it where you
-need frame-locked, broadcast-grade sync — that requires real timecode
-hardware (an LTC generator/reader DSP component), not a Lua plugin.
+**Bottom line**: for a genuinely time-critical show, wire a real
+TC-reading device or component into the TC Input pin — accuracy is then
+whatever that device delivers, with nothing this plugin does subtracting
+from it. There is no built-in fallback clock to lean on if nothing's
+wired in; without a TC source feeding the pin, TC cues simply never fire.
 
 ### Persistence
 
 Same split as the Live Show: **authored content** (every TC cue's name,
-target time, Enabled state, and actions) plus **setup preferences** (frame
-rate, source) are saved and restored. The **running clock position and
+target time, Enabled state, and actions) plus the **frame rate** are saved
+and restored. The **running clock position and
 every cue's fired/armed state are never persisted** — a reload or reboot
 always starts the Timecode Show at a clean `00:00:00:00` with every cue
 rearmed, the same "authored show vs. playback position" split the Live
@@ -724,17 +725,17 @@ specified:
    The `Loading`-guarded re-latch logic is defensive against that, but
    verify the E-Stop pin's behavior against real upstream hardware before
    relying on it for life-safety-adjacent use.
-6. **Timecode Show clock accuracy**: the internal clock is a `Timer`
-   ticking once per frame, with NO independent verification against real
-   Designer/Core hardware of how tightly Q-SYS's `Timer:Start(seconds)`
-   interval is actually held over a long run (drift/jitter under real
-   system load is expected, per Q-SYS Lua's general soft-real-time nature,
-   but the exact magnitude couldn't be measured outside Designer). Treat
-   Internal mode as good for rough, local cueing (see "Timecode Show" →
-   "Reliability") and verify actual drift on real hardware before trusting
-   it across a multi-hour show. External mode's accuracy is entirely
-   whatever upstream device is decoding TC and feeding the TC Input pin —
-   this plugin adds no further timing error, but also can't correct any.
+6. **Timecode Show clock accuracy**: an earlier build offered an Internal,
+   `Timer`-driven soft clock; it was removed (see "Timecode Show" →
+   "Reliability") specifically because its drift/jitter under real Q-SYS
+   Core load couldn't be bounded or verified outside Designer, and a
+   TC-driven show needs that bound. The TC Input pin is now the only
+   source of time, so accuracy is entirely whatever upstream device is
+   decoding TC and feeding the pin — this plugin adds no timing error of
+   its own, but also can't correct any it receives. Verify the pin relay
+   itself (a value written to TC Input reaches `TcCurrentText`/`TcOutput`
+   and evaluates TC cues) against real Designer before a live show, same
+   as everything else in this plugin.
 7. **No drop-frame support, by design**: only integer 24/25/30 fps are
    offered; real 29.97 (or 23.976) drop-frame timecode is deliberately not
    implemented, since its frame-number-skipping math is easy to get subtly
@@ -853,25 +854,25 @@ check repeated for `StatusText`/`ShowNameText` (Live Show page) and
 spot-check of the fields extended to match the user's report that runtime
 `.Color` left these boxes' text unreadable against a dark background.
 
-The Timecode Show is checked end-to-end using the same upgraded `Timer`
-mock (now correctly auto-repeating, matching real Q-SYS `Timer:Start()`
-semantics, rather than firing once): the internal clock is confirmed to
-tick and a TC cue to auto-fire on the exact tick its target frame is
-reached, and to not refire on subsequent ticks; resetting the clock is
-confirmed to rearm a passed cue so it fires again once TC passes it a
-second time (rewind-safe); a TC value that jumps straight past a cue's
-target in one update (simulating a lag spike or a burst of external TC) is
-confirmed to still fire it — proving the `>=` threshold design, not exact
-frame matching, is what's actually relied on; switching to External source
-is confirmed to stop the internal Timer from ticking; a TC cue's grid
-button is confirmed to manually test-fire even while Disabled, and a
-Disabled cue is confirmed to never auto-fire; E-Stop is confirmed to block
-both automatic and manual TC cue firing and to let a blocked cue retry
-automatically on the very next tick once cleared, with no special
-un-blocking step; STOP ALL is confirmed to cancel a TC cue's pending
-`wait` the same way it does a Live Show cue's; and the TC cue list, frame
-rate, and source are confirmed to round-trip through export/import while
-the clock position is confirmed to NOT resume (always reloads at
+The Timecode Show is checked end-to-end, entirely through the TC Input
+pin (there is no internal clock left to test): a TC cue is confirmed to
+auto-fire exactly when a TC value reaching its target frame arrives on the
+pin, and to not refire on subsequent updates; the status text is confirmed
+to read "Waiting for TC Input pin" before any TC has arrived and flip to
+"Receiving on TC Input pin" once it has; resetting the clock is confirmed
+to rearm a passed cue so it fires again once TC passes it a second time
+(rewind-safe); a TC value that jumps straight past a cue's target in one
+update (simulating a lag spike or a burst of incoming TC) is confirmed to
+still fire it — proving the `>=` threshold design, not exact frame
+matching, is what's actually relied on; a TC cue's grid button is
+confirmed to manually test-fire even while Disabled, and a Disabled cue is
+confirmed to never auto-fire; E-Stop is confirmed to block both automatic
+and manual TC cue firing and to let a blocked cue fire once TC keeps
+advancing after it's cleared; STOP ALL is confirmed to cancel a TC cue's
+pending `wait` the same way it does a Live Show cue's; the exported show
+is confirmed to no longer carry a `tc.source` field; and the TC cue list
+and frame rate are confirmed to round-trip through export/import while the
+clock position is confirmed to NOT resume (always reloads at
 `00:00:00:00`).
 
 The Clear/CLEAR ALL buttons are checked end-to-end too: a single-cue Clear
