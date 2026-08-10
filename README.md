@@ -363,13 +363,23 @@ branding line next to the page title, and the component's `PluginInfo`
 carries `Author = "LAUPI PRODUCTION"`.
 
 **Logo (base64, optional)** (a Property, not a runtime control) renders a
-small image in the top-right corner of every page. Paste **raw base64** —
-either your SVG file's XML, or a PNG/JPEG file's bytes — with **no**
-`data:image/...;base64,` prefix, just the base64 text itself. Leave it
-empty (the default) for no logo. The plugin **auto-detects which kind you
-pasted** from the base64 content itself (PNG and JPEG files always
-base64-encode to a fixed, recognizable prefix) — there's one Property field
-to paste into regardless of format.
+small square image in the top-right corner of every page. It **ships with
+LAUPI PRODUCTION's logo already embedded as the Property's default value**
+— nothing to configure, it's just there out of the box. Paste **raw
+base64** — either your SVG file's XML, or a PNG/JPEG file's bytes — with
+**no** `data:image/...;base64,` prefix, just the base64 text itself, to
+replace it. Clear the Property to empty for no logo at all. The plugin
+**auto-detects which kind you pasted** from the base64 content itself (PNG
+and JPEG files always base64-encode to a fixed, recognizable prefix) —
+there's one Property field to paste into regardless of format.
+
+> **The shipped logo is a white mark on a transparent background** (a
+> solid white "P" with thin outline strokes) — by design, this only reads
+> clearly against a **dark** background. With the page background in its
+> default **light** theme, it will be barely visible (white-on-near-white).
+> Turn on **Dark Background (design-time)** (see "Colors and theming"
+> below) to see it properly, or replace the Property with a dark/filled
+> version of the logo if you need it visible in Light mode too.
 
 This is a **design-time-only** feature: Q-SYS plugin graphics (the card
 backgrounds, borders, and this logo image) are baked in once when Designer
@@ -768,15 +778,17 @@ specified:
    in Designer yet (only the now-disproven runtime path was actually
    tested) — verify it before a live show, especially with Dark Background
    on.
-9. **Raster logo (`Type = "Image"`)**: PNG/JPEG base64 support is new,
-   built from documented syntax (`{ Type = "Image", Image = base64string,
+9. **Raster logo (`Type = "Image"`)**: PNG/JPEG base64 support (now used by
+   the shipped default LAUPI PRODUCTION logo, a 1500x1500 PNG) is built
+   from documented syntax (`{ Type = "Image", Image = base64string,
    Position, Size }`) rather than from a real example plugin using it (the
    ones checked only used `Type = "Svg"`). The PNG-vs-JPEG-vs-SVG
    auto-detection (from the base64 string's leading bytes, which are fixed
-   for PNG and JPEG file signatures) is straightforward and low-risk on its
-   own, but the `Type = "Image"` rendering path itself hasn't been visually
-   confirmed in real Designer — verify a pasted PNG/JPEG logo actually
-   appears before relying on it for a show.
+   for PNG and JPEG file signatures) is straightforward, low-risk, and
+   confirmed correct against the actual shipped file's real signature — but
+   the `Type = "Image"` *rendering* path itself hasn't been visually
+   confirmed in real Designer — verify the logo actually appears (and looks
+   right at a 36x36 box) before relying on it for a show.
 
 ## Validation performed
 
