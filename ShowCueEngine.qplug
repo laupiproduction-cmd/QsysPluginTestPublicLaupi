@@ -21,7 +21,7 @@
                              recursively (a group may invoke other groups),
                              with a circular-reference guard at fire time.
 
-  Four pages:
+  Five pages:
     - Live Show    : status bar, transport, quick-fire cue grid, activity log
     - Devices      : curated list of Q-SYS components ("Devices") and UDP
                      targets -- the ONLY things offered in the Show Editor's/
@@ -38,13 +38,16 @@
 
   Also: a latching E-Stop (Toggle, with a schematic input pin) that can
   only be cleared with a separate Clear E-Stop button; an optional design-
-  time logo (paste base64 SVG in Properties); a runtime Light/Dark Mode
-  toggle that re-skins the transport buttons, cue grid, and status LEDs
-  (page/card backgrounds are fixed at design time -- see README); and a
-  fifth page, Timecode Show, running a SECOND, independent show driven by
-  timecode instead of GO/the cue grid -- a soft-sync clock only (no
-  drop-frame, not frame-accurate) -- see README before relying on it for
-  anything frame-critical.
+  time logo (paste base64 SVG/PNG/JPEG in Properties, format auto-detected);
+  a runtime Light/Dark Mode toggle that re-skins the transport buttons, cue
+  grid, and status LEDs (page/card backgrounds are fixed at design time --
+  see README); a Timecode Show page running a SECOND, independent show
+  driven by timecode instead of GO/the cue grid -- a soft-sync clock only
+  (no drop-frame, not frame-accurate) -- see README before relying on it
+  for anything frame-critical; and, on every cue/group/device list, a
+  matching pair of Clear (selected) / Clear All buttons (bulk clears
+  press-twice-to-confirm), plus a show-wide CLEAR ALL on the Show Editor
+  page -- distinct from RESET, which only rewinds playback position.
 
   Only documented Q-SYS Lua extensions are used: UdpSocket, Component,
   Controls, Timer, rapidjson, Ping. See README.md for install/config notes
@@ -53,9 +56,10 @@
 
 PluginInfo = {
   Name = "Show Control~CueEngine",
-  Version = "1.8.0",
+  Version = "1.9.0",
   Id = "com.yourcompany.showcontrol.cueengine",
   Description = "Live-show cue engine: up to 30 cues, each firing a reorderable, optionally-delayed sequence of actions (player triggers, UDP, named controls, wait, reusable action groups).",
+  Author = "LAUPI PRODUCTION",
   ShowDebug = true,
 }
 
@@ -187,7 +191,7 @@ function GetProperties()
     Value = false,
   })
   table.insert(props, {
-    Name = "Logo SVG (base64, optional)",
+    Name = "Logo (base64, optional)",
     Type = "string",
     Value = "",
   })
@@ -278,6 +282,8 @@ function GetControls(props)
   if maxDevices > 0 then
     add({ Name = "DeviceName", ControlType = "Text", Count = maxDevices })
     add({ Name = "DeviceComponent", ControlType = "Text", Count = maxDevices })
+    add({ Name = "DeviceClear", ControlType = "Button", ButtonType = "Trigger", Count = maxDevices })
+    add({ Name = "ClearAllDevicesButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
   end
   if numUdp > 0 then
     add({ Name = "UdpTargetName", ControlType = "Text", Count = numUdp })
@@ -306,6 +312,9 @@ function GetControls(props)
   add({ Name = "CueConditionRequired", ControlType = "Button", ButtonType = "Toggle", Count = 1 })
 
   add({ Name = "AddActionButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
+  add({ Name = "ClearCueActionsButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
+  add({ Name = "ClearAllCueActionsButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
+  add({ Name = "ClearAllButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
 
   add({ Name = "ActionType", ControlType = "Text", Count = maxActions })
   add({ Name = "ActionTarget", ControlType = "Text", Count = maxActions })
@@ -324,6 +333,8 @@ function GetControls(props)
     add({ Name = "SelectedGroup", ControlType = "Text", Count = 1 })
     add({ Name = "GroupEditName", ControlType = "Text", Count = 1 })
     add({ Name = "AddGroupActionButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
+    add({ Name = "ClearGroupActionsButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
+    add({ Name = "ClearAllGroupActionsButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
 
     add({ Name = "GroupActionType", ControlType = "Text", Count = maxActions })
     add({ Name = "GroupActionTarget", ControlType = "Text", Count = maxActions })
@@ -459,6 +470,9 @@ function GetControlLayout(props)
     local M = 16
 
     title("SHOW CUE ENGINE  ~  Live", M, 6, 500)
+    -- Branding, same header row as the title -- to its right, clear of both
+    -- the title text and the optional logo (top-right corner of every page).
+    graphics[#graphics + 1] = { Type = "Text", Text = "CUE SYSTEM BY LAUPI PRODUCTION", Color = T.Text, FontSize = 8, HTextAlign = "Right", Position = { 540, 9 }, Size = { 230, 14 } }
 
     -- Show strip ------------------------------------------------------------
     card(M, 30, W - 2 * M, 52, "SHOW")
@@ -563,7 +577,7 @@ function GetControlLayout(props)
     title("SHOW CUE ENGINE  ~  Devices", M, 6, 600)
     local y = 30
 
-    local devH = maxDevices > 0 and (maxDevices * 22 + 34) or 40
+    local devH = maxDevices > 0 and (maxDevices * 22 + 34 + 30) or 40
     card(M, y, W - 2 * M, devH, "COMPONENTS / DEVICES  (curated -- only these appear as Targets in the Show Editor)")
     if maxDevices > 0 then
       for i = 1, maxDevices do
@@ -572,7 +586,9 @@ function GetControlLayout(props)
         layout[key("DeviceName", maxDevices, i)] = { PrettyName = string.format("Device %d~Friendly Name", i), Style = "Text", Color = T.Text, Position = { 28, ry }, Size = { 220, 18 } }
         textBoxBg(256, ry, 320, 18)
         layout[key("DeviceComponent", maxDevices, i)] = { PrettyName = string.format("Device %d~Q-SYS Component", i), Style = "ComboBox", Color = T.Text, Position = { 256, ry }, Size = { 320, 18 } }
+        layout[key("DeviceClear", maxDevices, i)] = { PrettyName = string.format("Device %d~Clear", i), Style = "Button", ButtonStyle = "Trigger", Legend = "CLEAR", Color = { 150, 155, 162 }, CornerRadius = 4, Position = { 584, ry }, Size = { 90, 18 } }
       end
+      layout["ClearAllDevicesButton"] = { PrettyName = "Clear ALL Devices", Style = "Button", ButtonStyle = "Trigger", Legend = "CLEAR ALL DEVICES", Color = Danger, CornerRadius = 4, Position = { 28, y + 24 + maxDevices * 22 + 6 }, Size = { 170, 22 } }
     else
       graphics[#graphics + 1] = { Type = "Text", Text = "No device slots configured (set the 'Max Devices' Property to add some).", FontSize = 9, Position = { 28, y + 18 }, Size = { 500, 16 } }
     end
@@ -623,7 +639,9 @@ function GetControlLayout(props)
       local editorH = 104 + maxActions * rowH
       card(M, y, W - 2 * M, editorH, "GROUP EDITOR")
       layout["SelectedGroup"] = { PrettyName = "Select Group", Style = "ComboBox", Position = { 28, y + 18 }, Size = { 240, 20 } }
-      layout["GroupEditName"] = { PrettyName = "Rename Group", Style = "Text", Position = { 280, y + 18 }, Size = { W - 2 * M - 280 - 14, 20 } }
+      layout["GroupEditName"] = { PrettyName = "Rename Group", Style = "Text", Position = { 280, y + 18 }, Size = { 314, 20 } }
+      layout["ClearGroupActionsButton"] = { PrettyName = "Clear Selected Group's Actions", Style = "Button", ButtonStyle = "Trigger", Legend = "CLEAR ACTIONS", Color = Danger, CornerRadius = 4, Position = { 608, y + 18 }, Size = { 130, 20 } }
+      layout["ClearAllGroupActionsButton"] = { PrettyName = "Clear Actions on EVERY Group", Style = "Button", ButtonStyle = "Trigger", Legend = "CLEAR ALL ACTIONS", Color = Danger, CornerRadius = 4, Position = { 746, y + 18 }, Size = { 140, 20 } }
 
       graphics[#graphics + 1] = { Type = "Text", Text = "#", FontSize = 8, Position = { 28, y + 46 }, Size = { 20, 12 } }
       graphics[#graphics + 1] = { Type = "Text", Text = "Type", FontSize = 8, Position = { 52, y + 46 }, Size = { 98, 12 } }
@@ -670,7 +688,7 @@ function GetControlLayout(props)
     -- The Global Condition is optional (off by default) and applies to EVERY
     -- cue in addition to any per-cue condition below -- e.g. a single "show
     -- is live" toggle that must be on before anything can fire.
-    card(M, y, W - 2 * M, 82, "GLOBAL SETTINGS (STOP ALL / E-STOP)")
+    card(M, y, W - 2 * M, 112, "GLOBAL SETTINGS (STOP ALL / E-STOP)")
     layout["GlobalStopControlName"] = { PrettyName = "Player Stop Control Name", Style = "Text", Position = { 28, y + 18 }, Size = { 300, 26 } }
     layout["PanicUdpPayload"] = { PrettyName = "E-Stop UDP Payload", Style = "Text", Position = { 344, y + 18 }, Size = { 300, 26 } }
     layout["GlobalConditionEnable"] = { PrettyName = "Global Condition~Enable", Style = "Button", ButtonStyle = "Toggle", Legend = "Global Condition", Color = Accent, CornerRadius = 4, Position = { 28, y + 50 }, Size = { 140, 22 } }
@@ -678,7 +696,13 @@ function GetControlLayout(props)
     layout["GlobalConditionControl"] = { PrettyName = "Global Condition~Control", Style = "ComboBox", Position = { 326, y + 50 }, Size = { 150, 22 } }
     layout["GlobalConditionRequired"] = { PrettyName = "Global Condition~Required State", Style = "Button", ButtonStyle = "Toggle", Legend = "Must be ON", Color = Success, OffColor = { 150, 155, 162 }, CornerRadius = 4, Position = { 480, y + 50 }, Size = { 110, 22 } }
     graphics[#graphics + 1] = { Type = "Text", Text = "Applies to every cue, on top of any per-cue condition below.", FontSize = 8, Position = { 600, y + 53 }, Size = { W - 2 * M - 600 + M, 16 } }
-    y = y + 82 + 12
+    -- CLEAR ALL: wipes every cue/device/action group/UDP target/TC cue back
+    -- to blank -- a full show reset, NOT the same as RESET on the Live Show
+    -- page (which only rewinds playback position). Press-twice-to-confirm,
+    -- same pattern as a cue's own Confirm Before Fire.
+    layout["ClearAllButton"] = { PrettyName = "Clear Entire Show (cues/devices/groups/UDP)", Style = "Button", ButtonStyle = "Trigger", Legend = "CLEAR ALL", Color = Danger, CornerRadius = 4, Position = { 28, y + 82 }, Size = { 160, 24 } }
+    graphics[#graphics + 1] = { Type = "Text", Text = "Wipes every cue, device, action group, UDP target, and TC cue back to blank. Press twice to confirm.", FontSize = 8, Position = { 198, y + 87 }, Size = { W - 2 * M - 198 + M, 16 } }
+    y = y + 112 + 12
 
     -- Export / Import -------------------------------------------------------------
     card(M, y, W - 2 * M, 172, "EXPORT / IMPORT SHOW (copy-paste JSON)")
@@ -711,6 +735,8 @@ function GetControlLayout(props)
     layout["CueEditColor"] = { PrettyName = "Cue Color (#RRGGBB)", Style = "Text", Position = { 280, y + 18 }, Size = { 80, 20 } }
     layout["CueEditArm"] = { PrettyName = "Armed", Style = "Button", ButtonStyle = "Toggle", Legend = "Arm", Color = Success, CornerRadius = 4, Position = { 368, y + 18 }, Size = { 56, 20 } }
     layout["CueEditConfirm"] = { PrettyName = "Confirm Before Fire", Style = "Button", ButtonStyle = "Toggle", Legend = "Confirm", Color = Warning, CornerRadius = 4, Position = { 432, y + 18 }, Size = { 74, 20 } }
+    layout["ClearCueActionsButton"] = { PrettyName = "Clear Selected Cue's Actions", Style = "Button", ButtonStyle = "Trigger", Legend = "CLEAR ACTIONS", Color = Danger, CornerRadius = 4, Position = { 520, y + 18 }, Size = { 130, 20 } }
+    layout["ClearAllCueActionsButton"] = { PrettyName = "Clear Actions on EVERY Cue", Style = "Button", ButtonStyle = "Trigger", Legend = "CLEAR ALL ACTIONS", Color = Danger, CornerRadius = 4, Position = { 658, y + 18 }, Size = { 150, 20 } }
 
     layout["CueEditName"] = { PrettyName = "Rename Cue", Style = "Text", Position = { 28, y + 46 }, Size = { 300, 20 } }
     layout["CueEditNotes"] = { PrettyName = "Notes (run sheet)", Style = "Text", Position = { 336, y + 46 }, Size = { W - 2 * M - 336 - 14, 20 } }
@@ -853,11 +879,19 @@ function GetControlLayout(props)
   -- are baked in once by GetControlLayout at design time -- there is no
   -- runtime API for the running plugin to redraw them -- so this is a
   -- fixed image set once in Designer's Properties panel, not something an
-  -- operator can change live during a show. Paste raw base64 of the SVG's
-  -- XML (no "data:image/svg+xml;base64," prefix). See README for details.
-  local logoValue = props["Logo SVG (base64, optional)"] and props["Logo SVG (base64, optional)"].Value or ""
+  -- operator can change live during a show. Paste raw base64 -- SVG XML,
+  -- or a PNG/JPEG file's bytes -- with no "data:...;base64," prefix. The
+  -- graphics Type ("Svg" vs "Image") is auto-detected from the base64
+  -- content itself (PNG/JPEG have a fixed, recognizable byte-1 signature
+  -- once base64-encoded) so there's just the one Property to paste into.
+  -- See README for details.
+  local logoValue = props["Logo (base64, optional)"] and props["Logo (base64, optional)"].Value or ""
   if logoValue ~= "" then
-    graphics[#graphics + 1] = { Type = "Svg", Image = logoValue, Position = { 920 - 16 - 120, 4 }, Size = { 120, 24 } }
+    local logoType = "Svg"
+    if logoValue:sub(1, 5) == "iVBOR" or logoValue:sub(1, 4) == "/9j/" then
+      logoType = "Image" -- PNG (iVBORw0KGgo...) or JPEG (/9j/...) magic-byte prefix, base64-encoded
+    end
+    graphics[#graphics + 1] = { Type = logoType, Image = logoValue, Position = { 920 - 16 - 120, 4 }, Size = { 120, 24 } }
   end
 
   return layout, graphics
@@ -966,6 +1000,12 @@ local TcFireCueNow, TcDispatchCueActions, TcFinishCueFire, TcCancelAllPendingWai
 local TcRefreshActionTargetChoices, TcRefreshActionControlChoices, TcRefreshVisibleActionChoices, TcRefreshActionValueEditor
 local TcRefreshSelectedCueChoices, TcRefreshActionRowVisibility, TcMoveActionUp, TcMoveActionDown
 local SelectTcCue, PushSelectedTcCueToEditor
+-- Bulk "clear" operations (Show Editor's Cue/Group action clears, the
+-- Devices page's device clears, and the master CLEAR ALL) all go through
+-- this one generic press-twice-to-confirm helper -- see its definition.
+local ConfirmedAction
+local ClearCueActions, ClearAllCueActions, ClearGroupActions, ClearAllGroupActions
+local ClearDevice, ClearAllDevices, ClearAllShow
 local Init
 
 -- ----------------------------------------------------------------------------
@@ -984,6 +1024,7 @@ local UdpSockets = {}    -- 1..NumUdp  -> UdpSocket object (or nil if never open
 local ComponentCache = {}-- real component name -> Component handle, or false if resolution failed
 local LastFireTime = {}  -- cue index -> os.clock() of last accepted fire (debounce)
 local PendingConfirm = {}-- cue index -> os.clock() of first press awaiting confirmation
+local PendingClearConfirm = {} -- id string -> os.clock() of first press, for ConfirmedAction() below
 local CueLog = {}        -- most-recent-first array of log line strings
 local SelectedCueIndex = 1
 local CurrentCueIndex = 0
@@ -2183,6 +2224,171 @@ ResetShow = function()
 end
 
 --=============================================================================
+-- Bulk "clear" operations. Each destructive one (everything except a single
+-- device's clear, which is as low-risk as removing one action row) confirms
+-- via press-twice-within-2s -- same pattern as a cue's own Confirm Before
+-- Fire, generalized here so it isn't reimplemented per button.
+--=============================================================================
+ConfirmedAction = function(id, ctrl, defaultLegend, confirmLegend, actionFn)
+  local now = os.clock()
+  if PendingClearConfirm[id] and (now - PendingClearConfirm[id]) * 1000 <= CONFIRM_WINDOW_MS then
+    PendingClearConfirm[id] = nil
+    pcall(function() ctrl.Legend = defaultLegend end)
+    actionFn()
+  else
+    PendingClearConfirm[id] = now
+    pcall(function() ctrl.Legend = confirmLegend end)
+    CallAfter(function()
+      if PendingClearConfirm[id] == now then
+        PendingClearConfirm[id] = nil
+        pcall(function() ctrl.Legend = defaultLegend end)
+      end
+    end, CONFIRM_WINDOW_MS / 1000)
+  end
+end
+
+ClearCueActions = function()
+  local c = Cues[SelectedCueIndex]
+  for a = 1, MaxActions do c.actions[a] = { type = "none", target = "", control = "", value = "" } end
+  c.activeActions = 0
+  PushSelectedCueToEditor()
+  MarkDirty(); SaveShowData()
+end
+
+ClearAllCueActions = function()
+  for i = 1, MaxCues do
+    local c = Cues[i]
+    for a = 1, MaxActions do c.actions[a] = { type = "none", target = "", control = "", value = "" } end
+    c.activeActions = 0
+  end
+  PushSelectedCueToEditor()
+  MarkDirty(); SaveShowData()
+end
+
+ClearGroupActions = function()
+  if MaxActionGroups <= 0 then return end
+  local g = ActionGroups[SelectedGroupIndex]
+  for a = 1, MaxActions do g.actions[a] = { type = "none", target = "", control = "", value = "" } end
+  g.activeActions = 0
+  PushSelectedGroupToEditor()
+  MarkDirty(); SaveShowData()
+end
+
+ClearAllGroupActions = function()
+  if MaxActionGroups <= 0 then return end
+  for i = 1, MaxActionGroups do
+    local g = ActionGroups[i]
+    for a = 1, MaxActions do g.actions[a] = { type = "none", target = "", control = "", value = "" } end
+    g.activeActions = 0
+  end
+  PushSelectedGroupToEditor()
+  MarkDirty(); SaveShowData()
+end
+
+-- A single device's clear is as low-risk as removing one action row (easy
+-- to redo, small blast radius) -- no confirm, matching that precedent.
+ClearDevice = function(i)
+  if MaxDevices <= 0 then return end
+  Devices[i].name = "Device " .. i
+  Devices[i].component = ""
+  pcall(function()
+    Controls.DeviceName[i].String = Devices[i].name
+    Controls.DeviceComponent[i].String = Devices[i].component
+  end)
+  RebuildComponentCache()
+  RefreshVisibleActionChoices()
+  TcRefreshVisibleActionChoices()
+  MarkDirty(); SaveShowData()
+end
+
+ClearAllDevices = function()
+  if MaxDevices <= 0 then return end
+  for i = 1, MaxDevices do
+    Devices[i].name = "Device " .. i
+    Devices[i].component = ""
+    pcall(function()
+      Controls.DeviceName[i].String = Devices[i].name
+      Controls.DeviceComponent[i].String = Devices[i].component
+    end)
+  end
+  RebuildComponentCache()
+  RefreshVisibleActionChoices()
+  TcRefreshVisibleActionChoices()
+  MarkDirty(); SaveShowData()
+end
+
+-- The big one: wipes every cue, device, action group, UDP target, and TC
+-- cue back to blank -- everything BuildShowTable persists, except the show
+-- name itself. Distinct from Reset Show (Live Show page), which only
+-- rewinds PLAYBACK POSITION and never touches authored content.
+ClearAllShow = function()
+  local wasLoading = Loading
+  Loading = true
+
+  for i = 1, MaxCues do
+    local c = Cues[i]
+    c.name = "Cue " .. i
+    c.notes = ""
+    c.color = "#465261"
+    c.armed = false
+    c.confirm = false
+    c.condition = { enabled = false, target = "", control = "", required = true }
+    for a = 1, MaxActions do c.actions[a] = { type = "none", target = "", control = "", value = "" } end
+    c.activeActions = 0
+  end
+  for i = 1, MaxDevices do
+    Devices[i].name = "Device " .. i
+    Devices[i].component = ""
+    pcall(function()
+      Controls.DeviceName[i].String = Devices[i].name
+      Controls.DeviceComponent[i].String = Devices[i].component
+    end)
+  end
+  for i = 1, MaxActionGroups do
+    local g = ActionGroups[i]
+    g.name = "Group " .. i
+    for a = 1, MaxActions do g.actions[a] = { type = "none", target = "", control = "", value = "" } end
+    g.activeActions = 0
+  end
+  for i = 1, NumUdp do
+    UdpTargets[i] = { name = "Target " .. i, ip = "", port = 0 }
+    PushUdpTargetToControls(i)
+  end
+  GlobalCondition = { enabled = false, target = "", control = "", required = true }
+  for i = 1, MaxTcCues do
+    local c = TcCues[i]
+    c.name = "TC Cue " .. i
+    c.targetString = "00:00:00:00"
+    c.targetFrames = 0
+    c.enabled = false
+    for a = 1, MaxActions do c.actions[a] = { type = "none", target = "", control = "", value = "" } end
+    c.activeActions = 0
+  end
+
+  RebuildComponentCache()
+  ResetPlaybackState()
+  TcResetClock()
+  TcRearmAllCues()
+  RefreshSelectedCueChoices()
+  SelectedCueIndex = 1
+  PushSelectedCueToEditor()
+  RefreshSelectedGroupChoices()
+  SelectedGroupIndex = 1
+  PushSelectedGroupToEditor()
+  TcRefreshSelectedCueChoices()
+  SelectedTcCueIndex = 1
+  PushSelectedTcCueToEditor()
+  PushGlobalConditionToControls()
+  table.insert(CueLog, 1, string.format("%s  --- Show Cleared (CLEAR ALL) ---", os.date("%H:%M:%S")))
+  while #CueLog > CUE_LOG_MAX do table.remove(CueLog) end
+  pcall(function() Controls.CueLogText.String = table.concat(CueLog, "\n") end)
+
+  Loading = wasLoading
+  MarkDirty(); SaveShowData()
+  if DebugOn then print("[CueEngine] Show cleared via CLEAR ALL") end
+end
+
+--=============================================================================
 -- E-Stop (latching panic): engaged by PanicButton going true (from the UI
 -- OR its schematic input pin), and -- deliberately -- can only be cleared
 -- by ResetPanicButton. Neither the UI nor the pin can clear it directly;
@@ -3231,6 +3437,24 @@ Controls.AddActionButton.EventHandler = function()
   end
 end
 
+Controls.ClearCueActionsButton.EventHandler = function(ctl)
+  if Loading then return end
+  if Controls.LockToggle.Boolean then return end
+  ConfirmedAction("clearCueActions", ctl, "CLEAR ACTIONS", "CONFIRM?", ClearCueActions)
+end
+
+Controls.ClearAllCueActionsButton.EventHandler = function(ctl)
+  if Loading then return end
+  if Controls.LockToggle.Boolean then return end
+  ConfirmedAction("clearAllCueActions", ctl, "CLEAR ALL ACTIONS", "CONFIRM CLEAR ALL?", ClearAllCueActions)
+end
+
+Controls.ClearAllButton.EventHandler = function(ctl)
+  if Loading then return end
+  if Controls.LockToggle.Boolean then return end
+  ConfirmedAction("clearAllShow", ctl, "CLEAR ALL", "CONFIRM CLEAR SHOW?", ClearAllShow)
+end
+
 for i = 1, MaxCues do
   Cues[i] = {
     name = "Cue " .. i, notes = "", color = "#465261", armed = false, confirm = false,
@@ -3350,6 +3574,18 @@ if MaxActionGroups > 0 then
       RefreshGroupActionRowVisibility()
       MarkDirty(); SaveShowData()
     end
+  end
+
+  Controls.ClearGroupActionsButton.EventHandler = function(ctl)
+    if Loading then return end
+    if Controls.LockToggle.Boolean then return end
+    ConfirmedAction("clearGroupActions", ctl, "CLEAR ACTIONS", "CONFIRM?", ClearGroupActions)
+  end
+
+  Controls.ClearAllGroupActionsButton.EventHandler = function(ctl)
+    if Loading then return end
+    if Controls.LockToggle.Boolean then return end
+    ConfirmedAction("clearAllGroupActions", ctl, "CLEAR ALL ACTIONS", "CONFIRM CLEAR ALL?", ClearAllGroupActions)
   end
 
   for a = 1, MaxActions do
@@ -3640,6 +3876,19 @@ for i = 1, MaxDevices do
     RefreshVisibleActionChoices()
     TcRefreshVisibleActionChoices()
     MarkDirty(); SaveShowData()
+  end
+  Controls.DeviceClear[devIdx].EventHandler = function()
+    if Loading then return end
+    if Controls.LockToggle.Boolean then return end
+    ClearDevice(devIdx)
+  end
+end
+
+if MaxDevices > 0 then
+  Controls.ClearAllDevicesButton.EventHandler = function(ctl)
+    if Loading then return end
+    if Controls.LockToggle.Boolean then return end
+    ConfirmedAction("clearAllDevices", ctl, "CLEAR ALL DEVICES", "CONFIRM CLEAR ALL?", ClearAllDevices)
   end
 end
 

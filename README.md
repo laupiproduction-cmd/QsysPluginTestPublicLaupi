@@ -69,7 +69,7 @@ with card-style grouped sections and section headings.
 | **Max Action Groups** | Number of reusable Action Groups | 8 | 0–24 |
 | **UDP Targets** | Number of configurable UDP devices | 6 | 0–12 |
 | **Show Debug** | Show the Lua debug window; also gates `print()` mirroring of errors/cue-fire log lines | false | — |
-| **Logo SVG (base64, optional)** | Raw base64 of an SVG's XML, rendered top-right on every page. Empty = no logo. Design-time only — see "Optional logo" below | "" (empty) | — |
+| **Logo (base64, optional)** | Raw base64 — SVG XML or a PNG/JPEG file's bytes, format auto-detected — rendered top-right on every page. Empty = no logo. Design-time only — see "Branding and optional logo" below | "" (empty) | — |
 | **Dark Background (design-time)** | Darkens the page background and title text. Design-time only, separate from the runtime DARK MODE button — see "Colors and theming" below | false | — |
 | **Max TC Cues** | Size of the Timecode Show's cue list | 16 | 0–30 |
 
@@ -205,6 +205,41 @@ rather than hanging or crashing. A `group` action naming a group that
 doesn't exist (typo, or the group was renamed) fails the same clear way —
 "action group not found" — without touching anything else in the cue.
 
+### Clearing and resetting
+
+Every place you can build up a list of actions also has a matching pair of
+**Clear** buttons — one for what's currently selected, one for everything
+at once:
+
+- **Show Editor, Cue Editor card**: **CLEAR ACTIONS** wipes the *selected*
+  cue's actions only (name, color, notes, armed/confirm, and condition are
+  untouched). **CLEAR ALL ACTIONS** does the same for **every** cue at
+  once.
+- **Action Groups page, Group Editor card**: **CLEAR ACTIONS** /
+  **CLEAR ALL ACTIONS** — identical pair, for the selected group / every
+  group.
+- **Devices page**: each device row has its own **CLEAR** button (resets
+  just that Friendly Name + Q-SYS Component, one click, no confirmation —
+  as low-risk as removing a single action row). **CLEAR ALL DEVICES**
+  resets every device row at once.
+
+Anything that clears **more than one thing at once** requires **pressing
+the button twice within 2 seconds** (the same confirm pattern as a cue's
+own Confirm Before Fire) — the first press changes its label to ask for
+confirmation and reverts on its own if you don't press again in time, so a
+single accidental click can never wipe a bank of actions.
+
+**CLEAR ALL** (Show Editor page, Global Settings card) is the big one: two
+presses wipes the **entire authored show** — every cue, device, action
+group, UDP target, and Timecode Show cue, back to blank defaults — and logs
+it in the Activity Log. This is **not the same thing as RESET** (Live Show
+page): RESET only rewinds *playback position* (which cue is active/played,
+Current/Next) and never touches what you've authored; CLEAR ALL only
+touches what you've authored and never touches playback position (though
+in practice there's nothing meaningful left to play after a full clear).
+Use RESET to restart a show you've built; use CLEAR ALL to start building a
+new one from scratch without deleting and re-adding the plugin.
+
 ### Optional fire conditions
 
 Every cue can optionally require a condition to be met before it's allowed
@@ -320,12 +355,21 @@ digital I/O card, another block's logic, a global "kill" signal, etc.
   hard-wired E-stop upstream), the plugin honors it immediately rather than
   silently ignoring it.
 
-### Optional logo
+### Branding and optional logo
 
-**Logo SVG (base64, optional)** (a Property, not a runtime control) renders
-a small image in the top-right corner of every page. Paste the **raw
-base64 of your SVG file's XML** — no `data:image/svg+xml;base64,` prefix,
-just the base64 text itself. Leave it empty (the default) for no logo.
+The Live Show page carries a small **"CUE SYSTEM BY LAUPI PRODUCTION"**
+branding line next to the page title, and the component's `PluginInfo`
+(shown in Designer's schematic library, e.g. right-click → Properties)
+carries `Author = "LAUPI PRODUCTION"`.
+
+**Logo (base64, optional)** (a Property, not a runtime control) renders a
+small image in the top-right corner of every page. Paste **raw base64** —
+either your SVG file's XML, or a PNG/JPEG file's bytes — with **no**
+`data:image/...;base64,` prefix, just the base64 text itself. Leave it
+empty (the default) for no logo. The plugin **auto-detects which kind you
+pasted** from the base64 content itself (PNG and JPEG files always
+base64-encode to a fixed, recognizable prefix) — there's one Property field
+to paste into regardless of format.
 
 This is a **design-time-only** feature: Q-SYS plugin graphics (the card
 backgrounds, borders, and this logo image) are baked in once when Designer
@@ -724,6 +768,15 @@ specified:
    in Designer yet (only the now-disproven runtime path was actually
    tested) — verify it before a live show, especially with Dark Background
    on.
+9. **Raster logo (`Type = "Image"`)**: PNG/JPEG base64 support is new,
+   built from documented syntax (`{ Type = "Image", Image = base64string,
+   Position, Size }`) rather than from a real example plugin using it (the
+   ones checked only used `Type = "Svg"`). The PNG-vs-JPEG-vs-SVG
+   auto-detection (from the base64 string's leading bytes, which are fixed
+   for PNG and JPEG file signatures) is straightforward and low-risk on its
+   own, but the `Type = "Image"` rendering path itself hasn't been visually
+   confirmed in real Designer — verify a pasted PNG/JPEG logo actually
+   appears before relying on it for a show.
 
 ## Validation performed
 
@@ -829,7 +882,22 @@ rate, and source are confirmed to round-trip through export/import while
 the clock position is confirmed to NOT resume (always reloads at
 `00:00:00:00`).
 
+The Clear/CLEAR ALL buttons are checked end-to-end too: a single-cue Clear
+Actions and a group's Clear Actions are both confirmed to require two
+presses within the confirm window (a lone press only relabels the button
+and changes nothing); Clear All Cue Actions and Clear All Group Actions
+are confirmed to wipe every cue's/group's actions while leaving names
+untouched; a single device's Clear is confirmed to reset that device on
+one press with no confirmation step, while Clear All Devices requires two;
+and CLEAR ALL is confirmed to require two presses, then wipe a cue's name,
+a device, a UDP target, and the TC clock all at once, log the event, and
+leave the editor pointed back at cue 1 -- while a single press is
+confirmed to leave everything untouched. `PluginInfo.Author` and the
+Live Show branding text are checked directly, and the logo's PNG/JPEG/SVG
+`Type` auto-detection is checked against real PNG and JPEG base64
+signature prefixes.
+
 It has **not** been run inside actual Q-SYS Designer or against real
 hardware — do that before a live show, per the persistence note above,
-and per the E-Stop pin and Timecode Show clock-accuracy caveats in
-"Assumptions flagged for review".
+and per the E-Stop pin, Timecode Show clock-accuracy, and raster-logo
+caveats in "Assumptions flagged for review".
