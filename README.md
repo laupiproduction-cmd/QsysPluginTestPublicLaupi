@@ -380,27 +380,35 @@ a show has been saved once, the runtime toggle's own persisted state (see
 above) takes over, independent of the Property, since it's now something
 you toggle live rather than only at setup.
 
-**Text boxes** (Cue Log, TC Cue Log, Current/Next Cue Notes, Export/Import
-JSON) are a special case: Q-SYS's `TextBox` control style has **no
-background-fill property at all** — not at design time (`Fill` only exists
-on card/page `GroupBox` graphics), and not at runtime. So each of these is
-given `TextBoxStyle = "NoBackground"` (makes it transparent) plus its own
-themed rectangle drawn behind it at the identical position — the same
+**Text boxes and plain text fields** (Cue Log, TC Cue Log, Current/Next Cue
+Notes, Export/Import JSON, and — since these follow the same treatment —
+the current-cue/Ready/Next Cue/Error status fields, Show Name/Last
+Modified, and every Device/UDP Target field on the Devices page) are a
+special case: Q-SYS's `Text`/`TextBox` control styles have **no
+background-fill property at all** — `Fill` only exists on card/page
+`GroupBox` graphics. So each of these is given `TextBoxStyle =
+"NoBackground"` where applicable (makes a TextBox transparent) plus its own
+small themed rectangle drawn behind it at the identical position — the same
 mechanism `card()` already uses everywhere else in this plugin, not a new
 technique. Like the page background, this rectangle is picked by the
 **Dark Background (design-time)** Property, not the runtime button — set
-the Property, and these boxes get a dark panel behind them too, not just
-the page around them.
+the Property, and these fields get a dark panel behind them too, not just
+the page around them. In Light mode the rectangle matches the card exactly,
+so nothing looks different from before.
 
-Their *text* color is also set, once, at boot — to a light color if Dark
-Background is on, dark otherwise — paired to the Property (not the runtime
-toggle), so the box and its text can never end up mismatched (light text
-on a light box, or the reverse). One caveat: Q-SYS's own documentation
-doesn't unambiguously confirm that `.Color` repaints a `TextBox`'s text at
-runtime (only that it's an accepted assignment) — this is attempted
-defensively (wrapped so a failure here can't affect anything else) but
-**verify it visually in real Designer**, especially with Dark Background
-on, before trusting these boxes stay readable.
+Each field's *text* color is set the same proven way every button's color
+already is: as a `Color = {r,g,b}` entry directly in the layout table
+`GetControlLayout` returns, picked from the same Light/Dark theme, right
+alongside its background rectangle — so the two can never end up
+mismatched. **An earlier build tried setting text color at *runtime*
+instead** (`Controls.X.Color = ...` in `Init()`), which is confirmed *not*
+to repaint a `TextBox`'s text in real Designer — that attempt has been
+removed. Design-time `Color` is the same mechanism already relied on
+throughout this whole plugin (every button's face color works this way),
+so it carries much higher confidence, but — like everything in this
+section — it's still keyed to the **Property**, not the live DARK MODE
+button, and hasn't been visually confirmed against real Designer either;
+verify it there before a live show.
 
 ## Testing UDP sending
 
@@ -699,18 +707,23 @@ specified:
    source is 29.97 non-drop, 30fps here is the closest fit; a true
    drop-frame source will read up to ~3.6 seconds "ahead" of real time
    after an hour, since dropped frame numbers are never accounted for.
-8. **TextBox runtime text color**: `Style = "TextBox"` controls (Cue Log,
-   TC Cue Log, notes, Export/Import) have no background-fill property at
-   all, confirmed against Q-SYS's own plugin documentation (`Fill` exists
-   only on `GroupBox` graphics) — hence the themed rectangle-behind-a-
-   transparent-TextBox approach described in "Colors and theming". Setting
-   `Controls.X.Color` on a `TextBox` at runtime to affect its *text* color
-   is accepted by the API but its effect **could not be unambiguously
-   confirmed** from available documentation or from a real, unmodified
-   example plugin (which never happened to use it). It's attempted
-   defensively at boot, paired to the Dark Background Property, and can't
-   affect anything else if it's a no-op — but verify these boxes' text
-   stays legible in real Designer, particularly with Dark Background on.
+8. **TextBox/Text runtime `.Color` does not repaint text — confirmed, not
+   just suspected**: `Style = "Text"`/`"TextBox"` controls have no
+   background-fill property at all (`Fill` exists only on `GroupBox`
+   graphics), hence the themed rectangle-behind-the-field approach in
+   "Colors and theming". An earlier build additionally tried setting
+   `Controls.X.Color` on these fields at *runtime* (in `Init()`) to color
+   their text, flagged at the time as unconfirmed by documentation — **this
+   was tested in real Designer and confirmed not to work**: the text stayed
+   its default color regardless. That runtime attempt has been removed.
+   Text color is now set the same proven way every button's face color
+   already is — as `Color = {r,g,b}` directly in the layout table
+   `GetControlLayout` returns, at design time — which carries much higher
+   confidence since it's the exact mechanism the whole rest of this plugin
+   already depends on, but it has **not itself** been visually re-confirmed
+   in Designer yet (only the now-disproven runtime path was actually
+   tested) — verify it before a live show, especially with Dark Background
+   on.
 
 ## Validation performed
 
@@ -785,10 +798,15 @@ themes (proving cards intentionally don't need per-element recoloring); and
 a couple of runtime transport button colors are checked against their
 expected values to confirm they still resolve correctly now that they're
 derived from the shared `ThemeLight` table instead of separately hardcoded.
-The TextBox background workaround is checked too: `CueLogText` is confirmed
-to carry `TextBoxStyle = "NoBackground"` and to have a themed GroupBox
-rectangle at its exact position (white in Light, dark in Dark Background),
-and its runtime `.Color` is confirmed to be set at boot to match.
+The text-field background/color workaround is checked too: `CueLogText` is
+confirmed to carry `TextBoxStyle = "NoBackground"` and to have a themed
+GroupBox rectangle at its exact position (white in Light, dark in Dark
+Background), and its design-time `Color` field is confirmed to be dark in
+Light mode and light in Dark Background mode — same check repeated for
+`StatusText`/`ShowNameText` (Live Show page) and `DeviceName 1`/
+`UdpTargetName 1` (Devices page) as a representative spot-check of the
+fields extended to match the user's report that runtime `.Color` left
+these boxes' text unreadable in Dark Background.
 
 The Timecode Show is checked end-to-end using the same upgraded `Timer`
 mock (now correctly auto-repeating, matching real Q-SYS `Timer:Start()`

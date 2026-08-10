@@ -53,7 +53,7 @@
 
 PluginInfo = {
   Name = "Show Control~CueEngine",
-  Version = "1.7.0",
+  Version = "1.8.0",
   Id = "com.yourcompany.showcontrol.cueengine",
   Description = "Live-show cue engine: up to 30 cues, each firing a reorderable, optionally-delayed sequence of actions (player triggers, UDP, named controls, wait, reusable action groups).",
   ShowDebug = true,
@@ -462,10 +462,12 @@ function GetControlLayout(props)
 
     -- Show strip ------------------------------------------------------------
     card(M, 30, W - 2 * M, 52, "SHOW")
-    layout["ShowNameText"] = { PrettyName = "Show Name", Style = "Text", Position = { 28, 48 }, Size = { 260, 20 } }
-    layout["LastModifiedText"] = { PrettyName = "Last Modified", Style = "Text", Position = { 300, 48 }, Size = { 170, 20 } }
+    textBoxBg(28, 48, 260, 20)
+    layout["ShowNameText"] = { PrettyName = "Show Name", Style = "Text", Color = T.Text, Position = { 28, 48 }, Size = { 260, 20 } }
+    textBoxBg(300, 48, 170, 20)
+    layout["LastModifiedText"] = { PrettyName = "Last Modified", Style = "Text", Color = T.Text, Position = { 300, 48 }, Size = { 170, 20 } }
     layout["UnsavedLed"] = { PrettyName = "Unsaved Changes", Style = "Indicator", Position = { 482, 50 }, Size = { 16, 16 } }
-    graphics[#graphics + 1] = { Type = "Text", Text = "Unsaved", FontSize = 9, Position = { 502, 48 }, Size = { 64, 20 } }
+    graphics[#graphics + 1] = { Type = "Text", Text = "Unsaved", Color = T.Text, FontSize = 9, Position = { 502, 48 }, Size = { 64, 20 } }
     layout["LockToggle"] = {
       PrettyName = "Lock Edits", Style = "Button", ButtonStyle = "Toggle", Legend = "LOCK",
       Color = Warning, CornerRadius = 4, Position = { 800, 46 }, Size = { 88, 24 },
@@ -474,11 +476,15 @@ function GetControlLayout(props)
     -- Status ------------------------------------------------------------------
     card(M, 94, W - 2 * M, 56, "STATUS")
     layout["StatusLed"] = { PrettyName = "Status", Style = "Indicator", Position = { 28, 112 }, Size = { 20, 20 } }
-    layout["StatusText"] = { PrettyName = "Status Text (Cue N: Name)", Style = "Text", Position = { 54, 114 }, Size = { 230, 18 } }
-    layout["StatusStateText"] = { PrettyName = "Status State (Ready/Firing/Error)", Style = "Text", Position = { 294, 114 }, Size = { 110, 18 } }
-    layout["NextCueText"] = { PrettyName = "Next Cue", Style = "Text", Position = { 414, 114 }, Size = { 220, 18 } }
+    textBoxBg(54, 114, 230, 18)
+    layout["StatusText"] = { PrettyName = "Status Text (Cue N: Name)", Style = "Text", Color = T.Text, Position = { 54, 114 }, Size = { 230, 18 } }
+    textBoxBg(294, 114, 110, 18)
+    layout["StatusStateText"] = { PrettyName = "Status State (Ready/Firing/Error)", Style = "Text", Color = T.Text, Position = { 294, 114 }, Size = { 110, 18 } }
+    textBoxBg(414, 114, 220, 18)
+    layout["NextCueText"] = { PrettyName = "Next Cue", Style = "Text", Color = T.Text, Position = { 414, 114 }, Size = { 220, 18 } }
     layout["ErrorLed"] = { PrettyName = "Error", Style = "Indicator", Position = { 644, 112 }, Size = { 20, 20 } }
-    layout["ErrorText"] = { PrettyName = "Error Text", Style = "Text", Position = { 670, 114 }, Size = { 218, 18 } }
+    textBoxBg(670, 114, 218, 18)
+    layout["ErrorText"] = { PrettyName = "Error Text", Style = "Text", Color = T.Text, Position = { 670, 114 }, Size = { 218, 18 } }
 
     -- Transport -----------------------------------------------------------------
     card(M, 162, W - 2 * M, 54, "TRANSPORT")
@@ -505,11 +511,11 @@ function GetControlLayout(props)
     local notesHalfW = (W - 2 * M - 12) / 2
     card(M, notesY, notesHalfW, notesH, "CURRENT CUE NOTES")
     textBoxBg(M + 14, notesY + 22, notesHalfW - 28, notesH - 36)
-    layout["CurrentCueNotesText"] = { PrettyName = "Current Cue Notes", Style = "TextBox", TextBoxStyle = "NoBackground", Position = { M + 14, notesY + 22 }, Size = { notesHalfW - 28, notesH - 36 } }
+    layout["CurrentCueNotesText"] = { PrettyName = "Current Cue Notes", Style = "TextBox", TextBoxStyle = "NoBackground", Color = T.Text, Position = { M + 14, notesY + 22 }, Size = { notesHalfW - 28, notesH - 36 } }
     local notes2X = M + notesHalfW + 12
     card(notes2X, notesY, notesHalfW, notesH, "NEXT CUE NOTES")
     textBoxBg(notes2X + 14, notesY + 22, notesHalfW - 28, notesH - 36)
-    layout["NextCueNotesText"] = { PrettyName = "Next Cue Notes", Style = "TextBox", TextBoxStyle = "NoBackground", Position = { notes2X + 14, notesY + 22 }, Size = { notesHalfW - 28, notesH - 36 } }
+    layout["NextCueNotesText"] = { PrettyName = "Next Cue Notes", Style = "TextBox", TextBoxStyle = "NoBackground", Color = T.Text, Position = { notes2X + 14, notesY + 22 }, Size = { notesHalfW - 28, notesH - 36 } }
 
     -- Cue grid (quick-fire) + activity log side-by-side ------------------------
     local gridCols = 6
@@ -540,7 +546,7 @@ function GetControlLayout(props)
     local logCardW = W - M - logCardX
     card(logCardX, gridCardY, logCardW, gridCardH, "ACTIVITY LOG")
     textBoxBg(logCardX + 14, gridCardY + 30, logCardW - 28, gridCardH - 44)
-    layout["CueLogText"] = { PrettyName = "Cue Fire Log", Style = "TextBox", TextBoxStyle = "NoBackground", Position = { logCardX + 14, gridCardY + 30 }, Size = { logCardW - 28, gridCardH - 44 } }
+    layout["CueLogText"] = { PrettyName = "Cue Fire Log", Style = "TextBox", TextBoxStyle = "NoBackground", Color = T.Text, Position = { logCardX + 14, gridCardY + 30 }, Size = { logCardW - 28, gridCardH - 44 } }
 
     local pageH = gridCardY + gridCardH + M
     pageBackground(W, pageH)
@@ -562,8 +568,10 @@ function GetControlLayout(props)
     if maxDevices > 0 then
       for i = 1, maxDevices do
         local ry = y + 24 + (i - 1) * 22
-        layout[key("DeviceName", maxDevices, i)] = { PrettyName = string.format("Device %d~Friendly Name", i), Style = "Text", Position = { 28, ry }, Size = { 220, 18 } }
-        layout[key("DeviceComponent", maxDevices, i)] = { PrettyName = string.format("Device %d~Q-SYS Component", i), Style = "ComboBox", Position = { 256, ry }, Size = { 320, 18 } }
+        textBoxBg(28, ry, 220, 18)
+        layout[key("DeviceName", maxDevices, i)] = { PrettyName = string.format("Device %d~Friendly Name", i), Style = "Text", Color = T.Text, Position = { 28, ry }, Size = { 220, 18 } }
+        textBoxBg(256, ry, 320, 18)
+        layout[key("DeviceComponent", maxDevices, i)] = { PrettyName = string.format("Device %d~Q-SYS Component", i), Style = "ComboBox", Color = T.Text, Position = { 256, ry }, Size = { 320, 18 } }
       end
     else
       graphics[#graphics + 1] = { Type = "Text", Text = "No device slots configured (set the 'Max Devices' Property to add some).", FontSize = 9, Position = { 28, y + 18 }, Size = { 500, 16 } }
@@ -575,10 +583,13 @@ function GetControlLayout(props)
     if numUdp > 0 then
       for i = 1, numUdp do
         local ry = y + 24 + (i - 1) * 22
-        layout[key("UdpTargetName", numUdp, i)] = { PrettyName = string.format("UDP Target %d~Name", i), Style = "Text", Position = { 28, ry }, Size = { 140, 18 } }
-        layout[key("UdpTargetIp", numUdp, i)] = { PrettyName = string.format("UDP Target %d~IP", i), Style = "Text", Position = { 176, ry }, Size = { 120, 18 } }
+        textBoxBg(28, ry, 140, 18)
+        layout[key("UdpTargetName", numUdp, i)] = { PrettyName = string.format("UDP Target %d~Name", i), Style = "Text", Color = T.Text, Position = { 28, ry }, Size = { 140, 18 } }
+        textBoxBg(176, ry, 120, 18)
+        layout[key("UdpTargetIp", numUdp, i)] = { PrettyName = string.format("UDP Target %d~IP", i), Style = "Text", Color = T.Text, Position = { 176, ry }, Size = { 120, 18 } }
         layout[key("UdpTargetPort", numUdp, i)] = { PrettyName = string.format("UDP Target %d~Port", i), Style = "TextBox", TextBoxStyle = "Meter", Position = { 304, ry }, Size = { 80, 18 } }
-        layout[key("UdpTargetStatus", numUdp, i)] = { PrettyName = string.format("UDP Target %d~Status", i), Style = "Text", Position = { 392, ry }, Size = { 200, 18 } }
+        textBoxBg(392, ry, 200, 18)
+        layout[key("UdpTargetStatus", numUdp, i)] = { PrettyName = string.format("UDP Target %d~Status", i), Style = "Text", Color = T.Text, Position = { 392, ry }, Size = { 200, 18 } }
       end
     else
       graphics[#graphics + 1] = { Type = "Text", Text = "No UDP targets configured (set the 'UDP Targets' Property to add some).", FontSize = 9, Position = { 28, y + 18 }, Size = { 500, 16 } }
@@ -673,10 +684,10 @@ function GetControlLayout(props)
     card(M, y, W - 2 * M, 172, "EXPORT / IMPORT SHOW (copy-paste JSON)")
     layout["ExportButton"] = { PrettyName = "Export Show", Style = "Button", ButtonStyle = "Trigger", Legend = "Export", Color = Accent, CornerRadius = 4, Position = { 28, y + 18 }, Size = { 100, 22 } }
     textBoxBg(28, y + 46, 320, 100)
-    layout["ExportData"] = { PrettyName = "Export JSON (copy this)", Style = "TextBox", TextBoxStyle = "NoBackground", Position = { 28, y + 46 }, Size = { 320, 100 } }
+    layout["ExportData"] = { PrettyName = "Export JSON (copy this)", Style = "TextBox", TextBoxStyle = "NoBackground", Color = T.Text, Position = { 28, y + 46 }, Size = { 320, 100 } }
     layout["ImportButton"] = { PrettyName = "Import Show", Style = "Button", ButtonStyle = "Trigger", Legend = "Import", Color = Accent, CornerRadius = 4, Position = { 364, y + 18 }, Size = { 100, 22 } }
     textBoxBg(364, y + 46, 320, 100)
-    layout["ImportData"] = { PrettyName = "Import JSON (paste here)", Style = "TextBox", TextBoxStyle = "NoBackground", Position = { 364, y + 46 }, Size = { 320, 100 } }
+    layout["ImportData"] = { PrettyName = "Import JSON (paste here)", Style = "TextBox", TextBoxStyle = "NoBackground", Color = T.Text, Position = { 364, y + 46 }, Size = { 320, 100 } }
     layout["ImportErrorText"] = { PrettyName = "Import Error", Style = "Text", Position = { 364, y + 150 }, Size = { 320, 18 } }
     graphics[#graphics + 1] = {
       Type = "Text",
@@ -796,7 +807,7 @@ function GetControlLayout(props)
       local logCardW = W - M - logCardX
       card(logCardX, gridCardY, logCardW, gridCardH, "TC ACTIVITY LOG")
       textBoxBg(logCardX + 14, gridCardY + 30, logCardW - 28, gridCardH - 44)
-      layout["TcCueLogText"] = { PrettyName = "TC Cue Fire Log", Style = "TextBox", TextBoxStyle = "NoBackground", Position = { logCardX + 14, gridCardY + 30 }, Size = { logCardW - 28, gridCardH - 44 } }
+      layout["TcCueLogText"] = { PrettyName = "TC Cue Fire Log", Style = "TextBox", TextBoxStyle = "NoBackground", Color = T.Text, Position = { logCardX + 14, gridCardY + 30 }, Size = { logCardW - 28, gridCardH - 44 } }
 
       y = y + gridCardH + 12
 
@@ -3734,22 +3745,14 @@ Init = function()
   ApplyColorMode(DarkMode)
   pcall(function() Controls.UnsavedLed.Color = StateColors.neutral end)
 
-  -- Pair each TextBox's TEXT color with its textBoxBg() Fill rectangle from
-  -- GetControlLayout -- keyed off the Dark Background PROPERTY (not the
-  -- runtime DarkMode toggle), since the rectangle behind it is design-time
-  -- and never changes without a reboot, so the text color shouldn't drift
-  -- out of sync with it live either. Q-SYS's docs don't unambiguously
-  -- confirm .Color repaints a TextBox's text (only that it's accepted) --
-  -- this is attempted defensively (pcall) once at boot; if it silently
-  -- doesn't take, only these boxes' text stays default-colored, nothing
-  -- else is affected. Verify in real Designer, especially in Dark Background.
-  do
-    local darkBgProp = Properties["Dark Background (design-time)"] and Properties["Dark Background (design-time)"].Value and true or false
-    local textColor = RgbToHex((darkBgProp and ThemeDark or ThemeLight).Text)
-    for _, name in ipairs({ "CurrentCueNotesText", "NextCueNotesText", "CueLogText", "ExportData", "ImportData", "TcCueLogText" }) do
-      pcall(function() Controls[name].Color = textColor end)
-    end
-  end
+  -- NOTE: an earlier build tried setting these TextBoxes' `.Color` here at
+  -- RUNTIME to pair their text with the textBoxBg() Fill rectangle behind
+  -- them. Confirmed in real Designer NOT to repaint the text -- removed.
+  -- Text color for these boxes (and the other Dark-Background-themed
+  -- fields) is now set the same way every button's color already is: as a
+  -- `Color = ...` field directly in the layout table GetControlLayout
+  -- returns, at design time, alongside the Fill rectangle it's paired
+  -- with -- see textBoxBg() and its call sites above.
 
   StartPingHeartbeat()
 
