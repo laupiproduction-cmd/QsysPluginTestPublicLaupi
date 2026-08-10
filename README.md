@@ -65,6 +65,7 @@ with card-style grouped sections and section headings.
 | **UDP Targets** | Number of configurable UDP devices | 6 | 0–12 |
 | **Show Debug** | Show the Lua debug window; also gates `print()` mirroring of errors/cue-fire log lines | false | — |
 | **Logo SVG (base64, optional)** | Raw base64 of an SVG's XML, rendered top-right on every page. Empty = no logo. Design-time only — see "Optional logo" below | "" (empty) | — |
+| **Dark Background (design-time)** | Darkens the page background and title text. Design-time only, separate from the runtime DARK MODE button — see "Colors and theming" below | false | — |
 
 Changing any of these **resizes the control set** (`GetControls` declares a
 static, fixed-size set of controls sized only from these Properties — the
@@ -339,15 +340,39 @@ red regardless of mode — an emergency control shouldn't be dimmed. The
 preference is remembered with the rest of the show (export/import and the
 persisted `ShowData` both carry it) and re-applied on the next boot.
 
-**This is not a full theme swap.** The same hard constraint that makes the
-logo design-time-only also caps Dark Mode's scope: the page and card
-backgrounds (white cards, light-grey page background) are baked in by
-`GetControlLayout` at design time and **cannot be repainted at runtime** —
-there's no Lua API for a running plugin to redraw its own graphics. Dark
-Mode is a genuine, working brightness toggle for the controls an operator
-actually watches (the cue grid, transport, status), not a dark canvas
-behind them. If you need a fully dark canvas, that requires a different
-Designer-side skin/theme, outside what a plugin's Lua runtime can control.
+**This is not a full theme swap, and it's a genuinely different mechanism
+from the page background** — see "Colors and theming" below for why, and
+for the separate **Dark Background** Property that covers the background.
+
+### Colors and theming
+
+All of this plugin's colors live in **one place**: the `ThemeLight` /
+`ThemeDark` tables near the top of `ShowCueEngine.qplug`. To restyle the
+plugin, edit the RGB triplets there — every card, button, and status color
+in the whole plugin is sourced from these two tables (the runtime Dark Mode
+palette above is derived from `ThemeLight` too, by dimming it, rather than
+being a third set of numbers to keep in sync).
+
+There are, unavoidably, **two separate switches** for the two things Q-SYS
+lets a plugin actually recolor:
+
+- **Runtime Controls** (buttons, LEDs, the cue grid) — flipped live by the
+  **DARK MODE** button (see above). Instant, no Designer interaction needed.
+- **The page background and card borders** — these are plugin *graphics*,
+  which Q-SYS only draws when `GetControlLayout(props)` runs at design
+  time; there is no Lua API for a running plugin to redraw them. So this is
+  controlled by the **Dark Background (design-time)** Property instead —
+  flip it in Designer's Properties panel (not a runtime button) to darken
+  the page background and page titles. Card interiors intentionally stay
+  light in *both* themes, so the several dozen small text labels throughout
+  the plugin's editors don't need individual recoloring to stay legible.
+
+The two aren't linked live (there's no API to link them) but they **do**
+default to the same state on a fresh boot (no show saved yet) — set the
+Property before first use and the runtime toggle starts matching it. After
+a show has been saved once, the runtime toggle's own persisted state (see
+above) takes over, independent of the Property, since it's now something
+you toggle live rather than only at setup.
 
 ## Testing UDP sending
 
@@ -487,13 +512,16 @@ specified:
    Reachable/Unreachable as expected.
 4. **Plugin graphics cannot be redrawn at runtime**: there is no documented
    Lua API for a running plugin to repaint the card/page backgrounds
-   `GetControlLayout` draws at design time. This shapes both newer features:
-   the optional logo is necessarily a design-time-only Property (see
-   "Optional logo"), and Dark Mode necessarily only re-skins actual
-   `Controls` (transport buttons, cue grid, status LEDs) rather than the
-   page/card backgrounds themselves (see "Light / Dark Mode"). If a future
-   Designer/Lua release adds a runtime graphics API, both could be extended
-   to cover backgrounds too.
+   `GetControlLayout` draws at design time. This shapes three features: the
+   optional logo is necessarily a design-time-only Property (see "Optional
+   logo"); Dark Mode necessarily only re-skins actual `Controls` (transport
+   buttons, cue grid, status LEDs) rather than the page/card backgrounds
+   themselves; and the page background's own light/dark palette is
+   necessarily a second, separate Property (**Dark Background
+   (design-time)**) rather than something the runtime DARK MODE button can
+   reach — see "Colors and theming". If a future Designer/Lua release adds a
+   runtime graphics API, all three could be extended to cover backgrounds
+   live.
 5. **E-Stop pin semantics**: `UserPin = true, PinStyle = "Input"` on
    `PanicButton` is the confirmed syntax for exposing a schematic input pin
    on a Boolean Toggle control, but the exact behavior of an external pin
@@ -568,7 +596,14 @@ normally again; and it's confirmed to cancel a cue's pending `wait`, same
 as the old Panic button did. Dark Mode is checked to actually change the
 transport buttons' `.Color` at runtime, restore the original color when
 toggled back off, and round-trip its on/off state (and the resulting
-colors) through export/import.
+colors) through export/import. The design-time color consolidation is
+checked directly too: the **Dark Background (design-time)** Property is
+confirmed to change the page background and title text colors returned by
+`GetControlLayout`, while card interiors stay identical between the two
+themes (proving cards intentionally don't need per-element recoloring); and
+a couple of runtime transport button colors are checked against their
+expected values to confirm they still resolve correctly now that they're
+derived from the shared `ThemeLight` table instead of separately hardcoded.
 
 It has **not** been run inside actual Q-SYS Designer or against real
 hardware — do that before a live show, per the persistence note above,

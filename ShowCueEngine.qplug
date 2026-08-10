@@ -49,7 +49,7 @@
 
 PluginInfo = {
   Name = "Show Control~CueEngine",
-  Version = "1.4.0",
+  Version = "1.5.0",
   Id = "com.yourcompany.showcontrol.cueengine",
   Description = "Live-show cue engine: up to 30 cues, each firing a reorderable, optionally-delayed sequence of actions (player triggers, UDP, named controls, wait, reusable action groups).",
   ShowDebug = true,
@@ -62,6 +62,66 @@ local HARD_MAX_ACTIONS = 25
 local HARD_MAX_DEVICES = 24
 local HARD_MAX_UDP = 12
 local HARD_MAX_ACTION_GROUPS = 24
+
+--=============================================================================
+-- Theme: the ONE place to edit this plugin's colors, split into a Light and
+-- a Dark palette.
+--
+-- These RGB triplets feed GetControlLayout (design time): the page
+-- background, cards, and every Control's placeholder Color/OffColor. The
+-- runtime Dark Mode button (see "if Controls" below) re-skins live Controls
+-- with its own hex-string palette derived from these same triplets via
+-- RgbToHex, so there's still only one set of numbers to edit -- see the note
+-- on ThemeDark below for why the background needs a second, separate switch.
+--=============================================================================
+local function RgbToHex(rgb)
+  return string.format("#%02X%02X%02X", rgb[1], rgb[2], rgb[3])
+end
+
+local ThemeLight = {
+  PageBg        = { 235, 238, 242 },
+  Card          = { 255, 255, 255 },
+  Border        = { 213, 219, 226 },
+  Muted         = { 226, 230, 235 }, -- subtle row banding
+  Text          = { 30, 33, 38 },    -- text sitting directly on PageBg (page titles, etc.)
+  Accent        = { 41, 98, 255 },
+  Success       = { 24, 160, 90 },
+  Warning       = { 214, 140, 20 },
+  Danger        = { 206, 42, 51 },
+  Neutral       = { 90, 98, 112 },   -- Reset Show / Clear E-Stop button faces
+  StatusNeutral = { 110, 118, 128 }, -- status/error LED at rest
+  Played        = { 38, 40, 45 },    -- a superseded cue, dimmed well below idle
+  CueIdle       = { 70, 82, 97 },    -- a cue button's placeholder color before Init() runs
+}
+
+-- Q-SYS plugin graphics (the page background and card borders) are only
+-- ever drawn when GetControlLayout(props) runs at DESIGN TIME -- there is
+-- no runtime API for a running plugin to redraw them (see README). So this
+-- palette is picked by the "Dark Background (design-time)" Property, not by
+-- the runtime DARK MODE button: flip the Property in Designer to actually
+-- darken the page background; the button still only re-skins live Controls
+-- (transport buttons, cue grid, status LEDs), same as before. Card interiors
+-- deliberately stay light in both themes -- every piece of on-card text in
+-- this plugin relies on the default (dark) text color, and keeping cards
+-- light means none of those ~50 individual Text elements need per-element
+-- recoloring. Only the page background, plus the couple of text elements
+-- that sit directly on it (page titles, the Action Groups intro line), go
+-- dark.
+local ThemeDark = {
+  PageBg        = { 24, 26, 30 },
+  Card          = ThemeLight.Card,
+  Border        = { 58, 63, 71 },
+  Muted         = ThemeLight.Muted,
+  Text          = { 232, 234, 238 },
+  Accent        = ThemeLight.Accent,
+  Success       = ThemeLight.Success,
+  Warning       = ThemeLight.Warning,
+  Danger        = ThemeLight.Danger,
+  Neutral       = ThemeLight.Neutral,
+  StatusNeutral = ThemeLight.StatusNeutral,
+  Played        = ThemeLight.Played,
+  CueIdle       = ThemeLight.CueIdle,
+}
 
 --=============================================================================
 -- Design time: Properties
@@ -112,6 +172,11 @@ function GetProperties()
     Name = "Logo SVG (base64, optional)",
     Type = "string",
     Value = "",
+  })
+  table.insert(props, {
+    Name = "Dark Background (design-time)",
+    Type = "boolean",
+    Value = false,
   })
   return props
 end
@@ -286,22 +351,20 @@ function GetControlLayout(props)
     return name .. " " .. i
   end
 
-  -- Shared palette -----------------------------------------------------------
-  local PageBg  = { 235, 238, 242 }
-  local Card    = { 255, 255, 255 }
-  local Border  = { 213, 219, 226 }
-  local Muted   = { 226, 230, 235 } -- subtle row banding
-  local Accent  = { 41, 98, 255 }
-  local Success = { 24, 160, 90 }
-  local Warning = { 214, 140, 20 }
-  local Danger  = { 206, 42, 51 }
+  -- Shared palette -- sourced from ThemeLight/ThemeDark above (see the
+  -- "Dark Background (design-time)" Property), so there's exactly one place
+  -- to edit these colors.
+  local darkBg = props["Dark Background (design-time)"] and props["Dark Background (design-time)"].Value or false
+  local T = darkBg and ThemeDark or ThemeLight
+  local PageBg, Card, Border, Muted = T.PageBg, T.Card, T.Border, T.Muted
+  local Accent, Success, Warning, Danger = T.Accent, T.Success, T.Warning, T.Danger
 
   local function pageBackground(w, h)
     graphics[#graphics + 1] = { Type = "GroupBox", Fill = PageBg, StrokeColor = PageBg, StrokeWidth = 0, CornerRadius = 0, Position = { 0, 0 }, Size = { w, h } }
   end
 
   local function title(text, x, y, w)
-    graphics[#graphics + 1] = { Type = "Header", Text = text, HTextAlign = "Left", Position = { x, y }, Size = { w, 18 } }
+    graphics[#graphics + 1] = { Type = "Header", Text = text, Color = T.Text, HTextAlign = "Left", Position = { x, y }, Size = { w, 18 } }
   end
 
   local function card(x, y, w, h, heading)
@@ -347,11 +410,11 @@ function GetControlLayout(props)
     layout["StopAllButton"] = { PrettyName = "Stop All", Style = "Button", ButtonStyle = "Trigger", Legend = "STOP ALL", Color = Warning, CornerRadius = 6, Position = { 138, 178 }, Size = { 110, 30 } }
     layout["PanicButton"] = {
       PrettyName = "E-Stop (also has an input pin -- see schematic)", Style = "Button", ButtonStyle = "Toggle",
-      Legend = "E-STOP", Color = Danger, OffColor = { 90, 98, 112 }, CornerRadius = 6,
+      Legend = "E-STOP", Color = Danger, OffColor = T.Neutral, CornerRadius = 6,
       Position = { 258, 178 }, Size = { 112, 30 },
     }
-    layout["ResetPanicButton"] = { PrettyName = "Clear E-Stop", Style = "Button", ButtonStyle = "Trigger", Legend = "CLEAR E-STOP", Color = { 90, 98, 112 }, CornerRadius = 6, Position = { 380, 178 }, Size = { 118, 30 } }
-    layout["ResetShowButton"] = { PrettyName = "Reset Show", Style = "Button", ButtonStyle = "Trigger", Legend = "RESET", Color = { 90, 98, 112 }, CornerRadius = 6, Position = { 508, 178 }, Size = { 90, 30 } }
+    layout["ResetPanicButton"] = { PrettyName = "Clear E-Stop", Style = "Button", ButtonStyle = "Trigger", Legend = "CLEAR E-STOP", Color = T.Neutral, CornerRadius = 6, Position = { 380, 178 }, Size = { 118, 30 } }
+    layout["ResetShowButton"] = { PrettyName = "Reset Show", Style = "Button", ButtonStyle = "Trigger", Legend = "RESET", Color = T.Neutral, CornerRadius = 6, Position = { 508, 178 }, Size = { 90, 30 } }
     layout["DarkModeToggle"] = {
       PrettyName = "Dark Mode (runtime)", Style = "Button", ButtonStyle = "Toggle",
       Legend = "DARK MODE", Color = { 30, 34, 40 }, OffColor = { 214, 218, 224 }, CornerRadius = 6,
@@ -388,7 +451,7 @@ function GetControlLayout(props)
         PrettyName = string.format("Cue %d~Fire", i),
         Style = "Button", ButtonStyle = "Trigger",
         Legend = tostring(i),
-        Color = { 70, 82, 97 },
+        Color = T.CueIdle,
         CornerRadius = 6,
         Position = { gridX + col * (cellW + gap), gridY + row * (cellH + gap) },
         Size = { cellW, cellH },
@@ -461,7 +524,7 @@ function GetControlLayout(props)
     graphics[#graphics + 1] = {
       Type = "Text",
       Text = "Define a reusable bundle of actions here, then invoke it from any cue with a 'group' action (Target = the group's name below). Groups can reference other groups too (circular references are rejected at fire time).",
-      FontSize = 9, Position = { M, y }, Size = { W - 2 * M, 16 },
+      Color = T.Text, FontSize = 9, Position = { M, y }, Size = { W - 2 * M, 16 },
     }
     y = y + 20
 
@@ -495,7 +558,7 @@ function GetControlLayout(props)
 
       y = y + editorH + M
     else
-      graphics[#graphics + 1] = { Type = "Text", Text = "No action group slots configured (set the 'Max Action Groups' Property to add some).", FontSize = 9, Position = { M, y }, Size = { 500, 16 } }
+      graphics[#graphics + 1] = { Type = "Text", Text = "No action group slots configured (set the 'Max Action Groups' Property to add some).", Color = T.Text, FontSize = 9, Position = { M, y }, Size = { 500, 16 } }
       y = y + 40 + M
     end
 
@@ -633,10 +696,15 @@ local ActionTypes = { "none", "player_trigger", "udp_send", "named_control_set",
 local ActionTypeSet = {}
 for _, t in ipairs(ActionTypes) do ActionTypeSet[t] = true end
 
--- Matches the RGB palette used in GetControlLayout (Accent/Warning/Danger/Success).
--- Light/Dark Mode (see ApplyColorMode below) mutates StateColors' VALUES in
--- place at runtime -- every function below reads through this same table,
--- so nothing needs to be re-wired when the mode changes.
+-- Derived from the SAME ThemeLight RGB triplets GetControlLayout uses (see
+-- the Theme section near the top of this file) via RgbToHex, so there's one
+-- set of numbers behind both design-time and runtime colors. The Dark Mode
+-- palette below is a deliberately DIMMED version of these (not ThemeDark,
+-- which only covers the page background -- see ThemeDark's own comment for
+-- why the background needs a separate, design-time-only switch). Light/Dark
+-- Mode (see ApplyColorMode below) mutates StateColors' VALUES in place at
+-- runtime -- every function below reads through this same table, so nothing
+-- needs to be re-wired when the mode changes.
 local function DimHex(hex, factor)
   local r = tonumber(hex:sub(2, 3), 16)
   local g = tonumber(hex:sub(4, 5), 16)
@@ -645,13 +713,13 @@ local function DimHex(hex, factor)
 end
 
 local LightStateColors = {
-  armed = "#2962FF",
-  firing = "#D68C14",
-  error = "#CE2A33",
-  ready = "#18A05A",
-  neutral = "#6E7680",
-  active = "#18A05A", -- the one cue currently "live" (persists until another cue fires)
-  played = "#26282D", -- a previously-active cue, dimmed well below idle (#465261) so it reads as "done"
+  armed = RgbToHex(ThemeLight.Accent),
+  firing = RgbToHex(ThemeLight.Warning),
+  error = RgbToHex(ThemeLight.Danger),
+  ready = RgbToHex(ThemeLight.Success),
+  neutral = RgbToHex(ThemeLight.StatusNeutral),
+  active = RgbToHex(ThemeLight.Success), -- the one cue currently "live" (persists until another cue fires)
+  played = RgbToHex(ThemeLight.Played),  -- a previously-active cue, dimmed well below idle (#465261) so it reads as "done"
 }
 local DarkStateColors = {}
 for k, v in pairs(LightStateColors) do
@@ -664,7 +732,12 @@ for k, v in pairs(LightStateColors) do StateColors[k] = v end
 -- The transport buttons' idle faces aren't state-driven like StateColors,
 -- so they get their own light/dark pair. E-Stop stays vivid red regardless
 -- of mode -- an emergency control should never be dimmed.
-local LightButtonColors = { GoButton = "#18A05A", StopAllButton = "#D68C14", ResetShowButton = "#5A6270", ResetPanicButton = "#5A6270" }
+local LightButtonColors = {
+  GoButton = RgbToHex(ThemeLight.Success),
+  StopAllButton = RgbToHex(ThemeLight.Warning),
+  ResetShowButton = RgbToHex(ThemeLight.Neutral),
+  ResetPanicButton = RgbToHex(ThemeLight.Neutral),
+}
 local DarkButtonColors = {}
 for k, v in pairs(LightButtonColors) do DarkButtonColors[k] = DimHex(v, 0.55) end
 
@@ -720,7 +793,11 @@ local LastTelemetryUpdate = 0.0
 local Loading = true     -- true while Init()/ApplyShowTable()/SelectCue() are pushing data into
                           -- Controls programmatically, so those writes don't re-trigger edit handlers.
 local PanicEngaged = false -- true once E-Stop has latched; only ClearPanic() may clear it
-local DarkMode = false    -- runtime Light/Dark Mode preference, persisted with the show
+-- Runtime Light/Dark Mode preference, persisted with the show. Defaults to
+-- match the "Dark Background (design-time)" Property so a fresh boot (no
+-- saved show yet) starts visually consistent -- a persisted show's own
+-- darkMode value (see ApplyShowTable) always overrides this default.
+local DarkMode = Properties["Dark Background (design-time)"] and Properties["Dark Background (design-time)"].Value and true or false
 local CurrentStatusKind = "ready" -- "ready"|"firing"|"error"; tracks what StatusLed should show
                                     -- under whichever palette is active, so ApplyColorMode can
                                     -- refresh it without re-deriving current show state
