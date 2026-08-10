@@ -1,0 +1,539 @@
+--[[
+================================================================================
+ PlayerRTA.qplug — Q-SYS Player plugin with embedded RTA visualizer
+================================================================================
+
+  Wraps an embedded Audio Player component and an embedded RTA - Band-Pass
+  component (see GetComponents below) inside a single plugin icon, and draws
+  a live spectrum on the plugin face using an inline EzSVG-style renderer.
+
+  UNRESOLVED <VERIFY: ...> ITEMS (see build prompt §10) — this build could
+  not reach a live Q-SYS Designer install / "Tools > View Component Controls
+  Info" pane, so the following are still open questions and are represented
+  below as the literal placeholder strings inside the `Verify` table, NOT as
+  invented-but-plausible names. Every placeholder is written so that Designer
+  will fail loudly (invalid Type / invalid pin / invalid control name) if the
+  plugin is used before these are filled in — that is deliberate, so a wrong
+  guess can never wire up "successfully" but incorrectly.
+
+    1. Verify.AudioPlayerType         — Type string for the embeddable Audio
+                                         Player component.
+    2. Verify.RtaType                 — Type string for the embeddable
+                                         RTA - Band-Pass component.
+    3. Verify.OutputsPropertyKey      — Property key on the embedded Player
+                                         that sets output channel count
+                                         (commented out in GetComponents
+                                         until confirmed; may not be
+                                         literally "n_outputs").
+    4. Verify.PlayerOutputPinPrefix   — Exact name of the Player's numbered
+                                         audio output pins.
+    5. Verify.RtaInputPinName         — Exact name of the RTA's measurement
+                                         audio input pin.
+    6. Verify.PlayControl / PauseControl / StopControl / NextControl /
+       PreviousControl / ShuffleControl / RepeatControl / LoopControl /
+       MuteControl / GainControl / StatusControl
+                                       — Exact control names on the embedded
+                                         Player for transport, gain/mute,
+                                         shuffle/repeat/loop, and status.
+    7. Verify.RtaMagnitudeControl     — Exact control name on the embedded
+                                         RTA whose `.Values` (or other
+                                         accessor — also unconfirmed) yields
+                                         the live per-band magnitude array.
+    8. Native Audio Player's real max output count (placeholder Max = 8
+       on the "Number of Outputs" property, see GetProperties).
+    9. Whether Position/seek should be a live-draggable Knob (as built here)
+       or a read-only/seek-on-release control — check native Player scrub
+       behavior in Designer before shipping.
+
+  Resolve all of the above against a real Audio Player and RTA - Band-Pass
+  dropped in a scratch design (Tools > View Component Controls Info), then
+  edit the `Verify` table below — every runtime reference funnels through
+  it, so that is the only place that needs to change.
+
+  EzSVG: the build prompt asks this to ship "the same way you already use
+  it" as a Code Module in prior plugins, but no prior plugin exists in this
+  repository to copy that mechanism from. To stay strictly self-contained
+  (no hard `require` on a file that won't ship inside the .qplug), EzSVG is
+  implemented inline below as a small local module exposing exactly the
+  surface the build prompt's drawRTA() example uses: Document/setStyle/Line/
+  Path/moveToA/lineToA/toString. If this project's actual Code Module
+  mechanism differs, move this block into that mechanism — the call sites
+  do not need to change.
+================================================================================
+]]--
+
+PluginInfo = {
+  Name = "Player RTA",
+  Version = "0.1.0",
+  Id = "com.laupiproduction.playerrta",
+  Description = "Embedded Audio Player with live RTA spectrum display",
+  ShowDebug = true,
+}
+
+-- ============================================================================
+-- Verify table — single point of truth for every QDS-derived name/string.
+-- ============================================================================
+local Verify = {
+  AudioPlayerType        = "<VERIFY_AUDIO_PLAYER_TYPE>",
+  RtaType                 = "<VERIFY_RTA_BAND_PASS_TYPE>",
+  OutputsPropertyKey      = "<VERIFY_OUTPUTS_PROPERTY_KEY>",
+  PlayerOutputPinPrefix   = "<VERIFY_PLAYER_OUTPUT_PIN>",
+  RtaInputPinName         = "<VERIFY_RTA_INPUT_PIN_NAME>",
+
+  PlayControl     = "<VERIFY_PLAYER_PLAY_CONTROL>",
+  PauseControl    = "<VERIFY_PLAYER_PAUSE_CONTROL>",
+  StopControl     = "<VERIFY_PLAYER_STOP_CONTROL>",
+  NextControl     = "<VERIFY_PLAYER_NEXT_CONTROL>",
+  PreviousControl = "<VERIFY_PLAYER_PREVIOUS_CONTROL>",
+  ShuffleControl  = "<VERIFY_PLAYER_SHUFFLE_CONTROL>",
+  RepeatControl   = "<VERIFY_PLAYER_REPEAT_CONTROL>",
+  LoopControl     = "<VERIFY_PLAYER_LOOP_CONTROL>",
+  MuteControl     = "<VERIFY_PLAYER_MUTE_CONTROL>",
+  GainControl     = "<VERIFY_PLAYER_GAIN_CONTROL>",
+  StatusControl   = "<VERIFY_PLAYER_STATUS_CONTROL>",
+
+  RtaMagnitudeControl = "<VERIFY_RTA_MAGNITUDE_CONTROL>",
+}
+
+local function playerOutputPin(i)
+  return string.format("%s %d", Verify.PlayerOutputPinPrefix, i)
+end
+
+-- ============================================================================
+-- GetProperties / RectifyProperties
+-- ============================================================================
+function GetProperties()
+  local props = {}
+
+  table.insert(props, {
+    Name = "Number of Outputs",
+    Type = "integer",
+    Min = 1,
+    Max = 8, -- VERIFY: confirm against native Audio Player's real maximum
+    Value = 2,
+  })
+
+  table.insert(props, {
+    Name = "Show RTA",
+    Type = "boolean",
+    Value = true,
+  })
+
+  table.insert(props, {
+    Name = "Emulation Mode",
+    Type = "boolean",
+    Value = false,
+  })
+
+  return props
+end
+
+function RectifyProperties(props)
+  -- Nothing to hide/disable among the properties themselves today; RTA-only
+  -- controls/graphics are gated at the control-layout level (GetControlLayout)
+  -- and at the pin/wiring level (GetPins/GetWiring), both keyed off
+  -- props["Show RTA"].Value.
+  return props
+end
+
+-- ============================================================================
+-- GetComponents — embedded Audio Player + embedded RTA - Band-Pass
+-- ============================================================================
+function GetComponents(props)
+  local components = {}
+
+  table.insert(components, {
+    Name = "player",
+    Type = Verify.AudioPlayerType,
+    Properties = {
+      -- [Verify.OutputsPropertyKey] = props["Number of Outputs"].Value,
+      -- Left commented out until the real property key is confirmed via
+      -- the Component Controls pane; setting a wrong key here can fail
+      -- component creation outright rather than just being ignored.
+    },
+  })
+
+  if props["Show RTA"].Value then
+    table.insert(components, {
+      Name = "rta",
+      Type = Verify.RtaType,
+      Properties = {
+        -- Fixed bandwidth/octave settings could go here if we don't want
+        -- to expose them as plugin properties; left default for now.
+      },
+    })
+  end
+
+  return components
+end
+
+-- ============================================================================
+-- GetPins
+-- ============================================================================
+function GetPins(props)
+  local pins = {}
+
+  for i = 1, props["Number of Outputs"].Value do
+    table.insert(pins, {
+      Name = string.format("Output %d", i),
+      Direction = "output",
+    })
+  end
+
+  if props["Emulation Mode"].Value then
+    table.insert(pins, {
+      Name = "Debug Audio Input",
+      Direction = "input",
+    })
+  end
+
+  return pins
+end
+
+-- ============================================================================
+-- GetWiring
+-- ============================================================================
+function GetWiring(props)
+  local wiring = {}
+
+  for i = 1, props["Number of Outputs"].Value do
+    table.insert(wiring, {
+      playerOutputPin(i),
+      string.format("Output %d", i),
+    })
+  end
+
+  if props["Show RTA"].Value then
+    if props["Emulation Mode"].Value then
+      -- Emulation can't decode/play real audio through the embedded Player,
+      -- so feed the RTA from the debug pin instead so the graphics path can
+      -- be validated with an external Pink Noise Generator wired in from
+      -- outside the plugin.
+      table.insert(wiring, { "Debug Audio Input", "rta " .. Verify.RtaInputPinName })
+    else
+      table.insert(wiring, { playerOutputPin(1), "rta " .. Verify.RtaInputPinName })
+    end
+  end
+
+  return wiring
+end
+
+-- ============================================================================
+-- GetControls
+-- ============================================================================
+function GetControls(props)
+  local ctrls = {}
+
+  -- Transport
+  table.insert(ctrls, { Name = "Play",     ControlType = "Button", ButtonType = "Trigger" })
+  table.insert(ctrls, { Name = "Pause",    ControlType = "Button", ButtonType = "Trigger" })
+  table.insert(ctrls, { Name = "Stop",     ControlType = "Button", ButtonType = "Trigger" })
+  table.insert(ctrls, { Name = "Previous", ControlType = "Button", ButtonType = "Trigger" })
+  table.insert(ctrls, { Name = "Next",     ControlType = "Button", ButtonType = "Trigger" })
+  table.insert(ctrls, { Name = "Shuffle",  ControlType = "Button", ButtonType = "Toggle" })
+  table.insert(ctrls, { Name = "Repeat",   ControlType = "Button", ButtonType = "Toggle" })
+  table.insert(ctrls, { Name = "Loop",     ControlType = "Button", ButtonType = "Toggle" })
+
+  -- Gain / mute
+  table.insert(ctrls, { Name = "Gain", ControlType = "Knob", ControlUnit = "dB", Min = -100, Max = 20 })
+  table.insert(ctrls, { Name = "Mute", ControlType = "Button", ButtonType = "Toggle" })
+
+  -- Transport readout
+  -- VERIFY (open question #9): native Player scrub behavior — live-drag vs
+  -- seek-on-release vs read-only — should be confirmed in Designer before
+  -- this ships; built as a live-draggable Knob per the build prompt for now.
+  table.insert(ctrls, { Name = "Position", ControlType = "Knob", ControlUnit = "Position", Min = 0, Max = 1 })
+  table.insert(ctrls, { Name = "ElapsedTime", ControlType = "Indicator", IndicatorType = "Text" })
+  table.insert(ctrls, { Name = "TrackName",   ControlType = "Indicator", IndicatorType = "Text" })
+  table.insert(ctrls, { Name = "Status",      ControlType = "Indicator", IndicatorType = "Status" })
+
+  -- RTA display (EzSVG canvas rendered into a chromeless button's Legend)
+  table.insert(ctrls, {
+    Name = "RtaDisplay",
+    ControlType = "Button",
+    ButtonType = "Momentary",
+    UserPin = false,
+  })
+
+  -- Hidden persistence control (rapidjson-encoded display settings only —
+  -- playback state itself lives in the embedded Player, not this plugin).
+  table.insert(ctrls, { Name = "PluginState", ControlType = "Text", IsHidden = true })
+
+  return ctrls
+end
+
+-- ============================================================================
+-- GetControlLayout — two-zone UI: transport strip on top, RTA panel below
+-- ============================================================================
+function GetControlLayout(props)
+  local layout = {}
+  local graphics = {}
+
+  local showRTA = props["Show RTA"].Value
+
+  table.insert(graphics, {
+    Type = "GroupBox",
+    Text = "Transport",
+    Position = { 8, 8 },
+    Size = { 784, 108 },
+  })
+
+  layout["Play"]     = { Style = "Button", Legend = "Play",     Position = { 16, 32 }, Size = { 60, 20 } }
+  layout["Pause"]    = { Style = "Button", Legend = "Pause",    Position = { 80, 32 }, Size = { 60, 20 } }
+  layout["Stop"]     = { Style = "Button", Legend = "Stop",     Position = { 144, 32 }, Size = { 60, 20 } }
+  layout["Previous"] = { Style = "Button", Legend = "Prev",     Position = { 216, 32 }, Size = { 50, 20 } }
+  layout["Next"]     = { Style = "Button", Legend = "Next",     Position = { 270, 32 }, Size = { 50, 20 } }
+  layout["Shuffle"]  = { Style = "Button", Legend = "Shuffle",  Position = { 332, 32 }, Size = { 60, 20 } }
+  layout["Repeat"]   = { Style = "Button", Legend = "Repeat",   Position = { 396, 32 }, Size = { 60, 20 } }
+  layout["Loop"]     = { Style = "Button", Legend = "Loop",     Position = { 460, 32 }, Size = { 60, 20 } }
+
+  layout["Gain"] = { Style = "Knob", Position = { 540, 20 }, Size = { 60, 40 } }
+  layout["Mute"] = { Style = "Button", Legend = "Mute", Position = { 610, 32 }, Size = { 50, 20 } }
+
+  layout["Position"]    = { Style = "Knob", Position = { 680, 20 }, Size = { 60, 40 } }
+  layout["TrackName"]   = { Style = "Text", Position = { 16, 64 }, Size = { 300, 20 } }
+  layout["ElapsedTime"] = { Style = "Text", Position = { 324, 64 }, Size = { 100, 20 } }
+  layout["Status"]      = { Style = "Indicator", Position = { 736, 20 }, Size = { 40, 20 } }
+
+  if showRTA then
+    table.insert(graphics, {
+      Type = "GroupBox",
+      Text = "RTA",
+      Position = { 8, 124 },
+      Size = { 784, 340 },
+    })
+    layout["RtaDisplay"] = {
+      Style = "Button",
+      Position = { 16, 148 },
+      Size = { 768, 300 },
+      UnlinkOffColor = true,
+    }
+  end
+  -- When Show RTA is off, RtaDisplay is intentionally left out of layout
+  -- entirely so it doesn't occupy space on the face.
+
+  return layout, graphics
+end
+
+-- ============================================================================
+-- EzSVG — inline minimal implementation (see header comment for rationale)
+-- ============================================================================
+local EzSVG = {}
+
+do
+  local defaultStyle = { stroke = "black", stroke_width = 1, fill = "none", fill_opacity = "1" }
+  local currentStyle = {}
+  for k, v in pairs(defaultStyle) do currentStyle[k] = v end
+
+  function EzSVG.setStyle(style)
+    for k, v in pairs(style) do currentStyle[k] = v end
+  end
+
+  local function styleAttrs(override)
+    local s = {}
+    for k, v in pairs(currentStyle) do s[k] = v end
+    if override then
+      for k, v in pairs(override) do s[k] = v end
+    end
+    return string.format(
+      'stroke="%s" stroke-width="%s" fill="%s" fill-opacity="%s"',
+      tostring(s.stroke), tostring(s.stroke_width), tostring(s.fill), tostring(s.fill_opacity)
+    )
+  end
+
+  local EzDoc = {}
+  EzDoc.__index = EzDoc
+
+  function EzSVG.Document(w, h)
+    return setmetatable({ w = w, h = h, elements = {} }, EzDoc)
+  end
+
+  function EzDoc:add(shape)
+    table.insert(self.elements, shape)
+  end
+
+  function EzDoc:toString()
+    local parts = {
+      string.format(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">',
+        self.w, self.h, self.w, self.h
+      ),
+    }
+    for _, el in ipairs(self.elements) do
+      table.insert(parts, el:render())
+    end
+    table.insert(parts, "</svg>")
+    return table.concat(parts)
+  end
+
+  local EzLine = {}
+  EzLine.__index = EzLine
+
+  function EzSVG.Line(x1, y1, x2, y2, style)
+    return setmetatable({ x1 = x1, y1 = y1, x2 = x2, y2 = y2, style = style }, EzLine)
+  end
+
+  function EzLine:render()
+    return string.format(
+      '<line x1="%s" y1="%s" x2="%s" y2="%s" %s/>',
+      tostring(self.x1), tostring(self.y1), tostring(self.x2), tostring(self.y2), styleAttrs(self.style)
+    )
+  end
+
+  local EzPath = {}
+  EzPath.__index = EzPath
+
+  function EzSVG.Path(style)
+    return setmetatable({ style = style, commands = {} }, EzPath)
+  end
+
+  function EzPath:moveToA(x, y)
+    table.insert(self.commands, string.format("M %s %s", tostring(x), tostring(y)))
+    return self
+  end
+
+  function EzPath:lineToA(x, y)
+    table.insert(self.commands, string.format("L %s %s", tostring(x), tostring(y)))
+    return self
+  end
+
+  function EzPath:render()
+    return string.format('<path d="%s" %s/>', table.concat(self.commands, " "), styleAttrs(self.style))
+  end
+end
+
+-- ============================================================================
+-- RTA rendering
+-- ============================================================================
+function drawRTA(magnitudes)
+  local doc = EzSVG.Document(800, 300)
+  EzSVG.setStyle({ stroke_width = 1, stroke = "dimgray" })
+
+  doc:add(EzSVG.Line(0, 0, 0, 300))
+  doc:add(EzSVG.Line(0, 300, 800, 300))
+
+  local path = EzSVG.Path({
+    stroke = "blue",
+    stroke_width = 2,
+    fill = "blue",
+    fill_opacity = "0.2",
+  })
+
+  if #magnitudes < 2 then
+    return doc:toString()
+  end
+
+  local step = 800 / (#magnitudes - 1)
+  path:moveToA(0, 300)
+  for i, v in ipairs(magnitudes) do
+    -- v expected normalized 0..1; clamp defensively since raw RTA dB values
+    -- must be scaled/normalized by the caller before reaching this function.
+    local clamped = math.max(0, math.min(1, v))
+    path:lineToA((i - 1) * step, (1 - clamped) * 300)
+  end
+  path:lineToA(800, 300)
+  doc:add(path)
+
+  return doc:toString()
+end
+
+-- ============================================================================
+-- Runtime
+-- ============================================================================
+if Controls then
+  local function safe(fn)
+    return function(...)
+      local ok, err = pcall(fn, ...)
+      if not ok then
+        print("PlayerRTA error: " .. tostring(err))
+      end
+    end
+  end
+
+  -- The `rta` global only exists if "Show RTA" was true at compile time.
+  local hasRTA = false
+  do
+    local ok, comp = pcall(function() return rta end)
+    hasRTA = ok and comp ~= nil
+  end
+
+  -- ---- Transport wiring (event-driven, pcall-wrapped) ----------------------
+  Controls.Play.EventHandler     = safe(function() player[Verify.PlayControl]:Trigger() end)
+  Controls.Pause.EventHandler    = safe(function() player[Verify.PauseControl]:Trigger() end)
+  Controls.Stop.EventHandler     = safe(function() player[Verify.StopControl]:Trigger() end)
+  Controls.Next.EventHandler     = safe(function() player[Verify.NextControl]:Trigger() end)
+  Controls.Previous.EventHandler = safe(function() player[Verify.PreviousControl]:Trigger() end)
+
+  -- Shuffle/Repeat/Loop handlers are wired further down, alongside the
+  -- debounced PluginState save (§ PluginState persistence) — they both push
+  -- to the embedded Player and persist the display preference in one place.
+  Controls.Mute.EventHandler    = safe(function() player[Verify.MuteControl].Boolean = Controls.Mute.Boolean end)
+  Controls.Gain.EventHandler    = safe(function() player[Verify.GainControl].Value = Controls.Gain.Value end)
+
+  -- Mirror player status back to plugin UI (event-driven, not polled).
+  safe(function()
+    player[Verify.StatusControl].EventHandler = safe(function(ctl)
+      Controls.Status.String = ctl.String
+    end)
+  end)()
+
+  -- ---- RTA redraw (UI refresh timer, not status polling) -------------------
+  local rtaTimer = Timer.New()
+  rtaTimer.EventHandler = function()
+    if not hasRTA then return end
+    local ok, mags = pcall(function() return rta[Verify.RtaMagnitudeControl].Values end)
+    if not ok or not mags then return end
+    Controls.RtaDisplay.Legend = rapidjson.encode({
+      DrawChrome = false,
+      IconData = Crypto.Base64Encode(drawRTA(mags)),
+    })
+  end
+  if hasRTA then
+    rtaTimer:Start(0.066) -- ~15 Hz redraw cadence
+  end
+
+  -- ---- PluginState persistence (display prefs only, debounced) -------------
+  local saveTimer = Timer.New()
+
+  local function saveState()
+    local state = {
+      Shuffle = Controls.Shuffle.Boolean,
+      Repeat  = Controls.Repeat.Boolean,
+      Loop    = Controls.Loop.Boolean,
+    }
+    Controls.PluginState.String = rapidjson.encode(state)
+  end
+
+  saveTimer.EventHandler = safe(saveState)
+
+  local function debounceSave()
+    saveTimer:Stop()
+    saveTimer:Start(0.5)
+  end
+
+  -- Load persisted display prefs once at runtime start, before wiring the
+  -- debounced-save handlers below (so loading doesn't immediately re-save).
+  safe(function()
+    if Controls.PluginState.String ~= "" then
+      local state = rapidjson.decode(Controls.PluginState.String)
+      if state then
+        if state.Shuffle ~= nil then Controls.Shuffle.Boolean = state.Shuffle end
+        if state.Repeat  ~= nil then Controls.Repeat.Boolean  = state.Repeat end
+        if state.Loop    ~= nil then Controls.Loop.Boolean    = state.Loop end
+      end
+    end
+  end)()
+
+  Controls.Shuffle.EventHandler = safe(function()
+    player[Verify.ShuffleControl].Boolean = Controls.Shuffle.Boolean
+    debounceSave()
+  end)
+  Controls.Repeat.EventHandler = safe(function()
+    player[Verify.RepeatControl].Boolean = Controls.Repeat.Boolean
+    debounceSave()
+  end)
+  Controls.Loop.EventHandler = safe(function()
+    player[Verify.LoopControl].Boolean = Controls.Loop.Boolean
+    debounceSave()
+  end)
+end
