@@ -56,7 +56,7 @@
 
 PluginInfo = {
   Name = "Show Control~CueEngine",
-  Version = "1.10.1",
+  Version = "1.11.0",
   Id = "com.yourcompany.showcontrol.cueengine",
   Description = "Live-show cue engine: up to 30 cues, each firing a reorderable, optionally-delayed sequence of actions (player triggers, UDP, named controls, wait, reusable action groups).",
   Author = "LAUPI PRODUCTION",
@@ -247,6 +247,8 @@ function GetControls(props)
     add({ Name = "UdpTargetIp", ControlType = "Text", Count = numUdp })
     add({ Name = "UdpTargetPort", ControlType = "Knob", ControlUnit = "Integer", Min = 1, Max = 65535, Count = numUdp })
     add({ Name = "UdpTargetStatus", ControlType = "Text", Count = numUdp })
+    add({ Name = "UdpTargetClear", ControlType = "Button", ButtonType = "Trigger", Count = numUdp })
+    add({ Name = "ClearAllUdpButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
   end
 
   -- Cue quick-fire grid (Live Show page) ---------------------------------------
@@ -566,7 +568,7 @@ function GetControlLayout(props)
     end
     y = y + devH + 12
 
-    local udpH = numUdp > 0 and (numUdp * 22 + 34) or 40
+    local udpH = numUdp > 0 and (numUdp * 22 + 34 + 30) or 40
     card(M, y, W - 2 * M, udpH, "UDP TARGETS")
     if numUdp > 0 then
       for i = 1, numUdp do
@@ -578,7 +580,9 @@ function GetControlLayout(props)
         layout[key("UdpTargetPort", numUdp, i)] = { PrettyName = string.format("UDP Target %d~Port", i), Style = "TextBox", Color = T.Text, TextBoxStyle = "Meter", Position = { 304, ry }, Size = { 80, 18 } }
         textBoxBg(392, ry, 200, 18)
         layout[key("UdpTargetStatus", numUdp, i)] = { PrettyName = string.format("UDP Target %d~Status", i), Style = "Text", Color = T.Text, Position = { 392, ry }, Size = { 200, 18 } }
+        layout[key("UdpTargetClear", numUdp, i)] = { PrettyName = string.format("UDP Target %d~Clear", i), Style = "Button", ButtonStyle = "Trigger", Legend = "CLEAR", Color = { 150, 155, 162 }, CornerRadius = 4, Position = { 604, ry }, Size = { 90, 18 } }
       end
+      layout["ClearAllUdpButton"] = { PrettyName = "Clear ALL UDP Targets", Style = "Button", ButtonStyle = "Trigger", Legend = "CLEAR ALL UDP TARGETS", Color = Danger, CornerRadius = 4, Position = { 28, y + 24 + numUdp * 22 + 6 }, Size = { 190, 22 } }
     else
       graphics[#graphics + 1] = { Type = "Text", Text = "No UDP targets configured (set the 'UDP Targets' Property to add some).", FontSize = 9, Position = { 28, y + 18 }, Size = { 500, 16 } , Color = T.Text }
     end
@@ -619,7 +623,7 @@ function GetControlLayout(props)
       graphics[#graphics + 1] = { Type = "Text", Text = "Type", FontSize = 8, Position = { 52, y + 46 }, Size = { 98, 12 } , Color = T.Text }
       graphics[#graphics + 1] = { Type = "Text", Text = "Target (device / UDP target / group)", FontSize = 8, Position = { 154, y + 46 }, Size = { 148, 12 } , Color = T.Text }
       graphics[#graphics + 1] = { Type = "Text", Text = "Control", FontSize = 8, Position = { 306, y + 46 }, Size = { 128, 12 } , Color = T.Text }
-      graphics[#graphics + 1] = { Type = "Text", Text = "Value (toggle if Boolean; wait = seconds)", FontSize = 8, Position = { 438, y + 46 }, Size = { 140, 12 } , Color = T.Text }
+      graphics[#graphics + 1] = { Type = "Text", Text = "Value (toggle=Boolean; wait=secs)", FontSize = 8, Position = { 438, y + 46 }, Size = { 140, 12 } , Color = T.Text }
 
       local rowsY = y + 60
       for a = 1, maxActions do
@@ -726,7 +730,7 @@ function GetControlLayout(props)
     graphics[#graphics + 1] = { Type = "Text", Text = "Type", FontSize = 8, Position = { 52, y + 102 }, Size = { 98, 12 } , Color = T.Text }
     graphics[#graphics + 1] = { Type = "Text", Text = "Target (device / UDP target)", FontSize = 8, Position = { 154, y + 102 }, Size = { 148, 12 } , Color = T.Text }
     graphics[#graphics + 1] = { Type = "Text", Text = "Control", FontSize = 8, Position = { 306, y + 102 }, Size = { 128, 12 } , Color = T.Text }
-    graphics[#graphics + 1] = { Type = "Text", Text = "Value (toggle if Boolean; wait = seconds)", FontSize = 8, Position = { 438, y + 102 }, Size = { 140, 12 } , Color = T.Text }
+    graphics[#graphics + 1] = { Type = "Text", Text = "Value (toggle=Boolean; wait=secs)", FontSize = 8, Position = { 438, y + 102 }, Size = { 140, 12 } , Color = T.Text }
 
     local rowsY = y + 116
     for a = 1, maxActions do
@@ -821,7 +825,7 @@ function GetControlLayout(props)
       graphics[#graphics + 1] = { Type = "Text", Text = "Type", FontSize = 8, Position = { 52, y + 46 }, Size = { 98, 12 } , Color = T.Text }
       graphics[#graphics + 1] = { Type = "Text", Text = "Target (device / UDP target / group)", FontSize = 8, Position = { 154, y + 46 }, Size = { 148, 12 } , Color = T.Text }
       graphics[#graphics + 1] = { Type = "Text", Text = "Control", FontSize = 8, Position = { 306, y + 46 }, Size = { 128, 12 } , Color = T.Text }
-      graphics[#graphics + 1] = { Type = "Text", Text = "Value (toggle if Boolean; wait = seconds)", FontSize = 8, Position = { 438, y + 46 }, Size = { 140, 12 } , Color = T.Text }
+      graphics[#graphics + 1] = { Type = "Text", Text = "Value (toggle=Boolean; wait=secs)", FontSize = 8, Position = { 438, y + 46 }, Size = { 140, 12 } , Color = T.Text }
 
       local rowsY = y + 60
       for a = 1, maxActions do
@@ -951,6 +955,7 @@ local SelectTcCue, PushSelectedTcCueToEditor
 local ConfirmedAction
 local ClearCueActions, ClearAllCueActions, ClearGroupActions, ClearAllGroupActions
 local ClearDevice, ClearAllDevices, ClearAllShow
+local ClearUdpTarget, ClearAllUdpTargets
 local Init
 
 -- ----------------------------------------------------------------------------
@@ -2223,6 +2228,26 @@ ClearDevice = function(i)
     Controls.DeviceComponent[i].String = Devices[i].component
   end)
   RebuildComponentCache()
+  RefreshVisibleActionChoices()
+  TcRefreshVisibleActionChoices()
+  MarkDirty(); SaveShowData()
+end
+
+ClearUdpTarget = function(i)
+  if NumUdp <= 0 then return end
+  UdpTargets[i] = { name = "Target " .. i, ip = "", port = 0 }
+  PushUdpTargetToControls(i)
+  RefreshVisibleActionChoices()
+  TcRefreshVisibleActionChoices()
+  MarkDirty(); SaveShowData()
+end
+
+ClearAllUdpTargets = function()
+  if NumUdp <= 0 then return end
+  for i = 1, NumUdp do
+    UdpTargets[i] = { name = "Target " .. i, ip = "", port = 0 }
+    PushUdpTargetToControls(i)
+  end
   RefreshVisibleActionChoices()
   TcRefreshVisibleActionChoices()
   MarkDirty(); SaveShowData()
@@ -3808,6 +3833,20 @@ for i = 1, NumUdp do
     if Controls.LockToggle.Boolean then ctl.Value = UdpTargets[i].port; return end
     UdpTargets[i].port = math.floor(ctl.Value)
     MarkDirty(); SaveShowData()
+  end
+  local udpIdx = i
+  Controls.UdpTargetClear[udpIdx].EventHandler = function()
+    if Loading then return end
+    if Controls.LockToggle.Boolean then return end
+    ClearUdpTarget(udpIdx)
+  end
+end
+
+if NumUdp > 0 then
+  Controls.ClearAllUdpButton.EventHandler = function(ctl)
+    if Loading then return end
+    if Controls.LockToggle.Boolean then return end
+    ConfirmedAction("clearAllUdp", ctl, "CLEAR ALL UDP TARGETS", "CONFIRM CLEAR ALL?", ClearAllUdpTargets)
   end
 end
 

@@ -223,6 +223,9 @@ at once:
   just that Friendly Name + Q-SYS Component, one click, no confirmation —
   as low-risk as removing a single action row). **CLEAR ALL DEVICES**
   resets every device row at once.
+- **Devices page, UDP Targets card**: same pair for UDP targets — each
+  row's own **CLEAR** button (resets Name/IP/Port, one click, no
+  confirmation) and **CLEAR ALL UDP TARGETS** for every row at once.
 
 Anything that clears **more than one thing at once** requires **pressing
 the button twice within 2 seconds** (the same confirm pattern as a cue's
@@ -876,8 +879,9 @@ Actions and a group's Clear Actions are both confirmed to require two
 presses within the confirm window (a lone press only relabels the button
 and changes nothing); Clear All Cue Actions and Clear All Group Actions
 are confirmed to wipe every cue's/group's actions while leaving names
-untouched; a single device's Clear is confirmed to reset that device on
-one press with no confirmation step, while Clear All Devices requires two;
+untouched; a single device's Clear (and, identically, a single UDP
+target's Clear) is confirmed to reset it on one press with no confirmation
+step, while Clear All Devices and Clear All UDP Targets both require two;
 and CLEAR ALL is confirmed to require two presses, then wipe a cue's name,
 a device, a UDP target, and the TC clock all at once, log the event, and
 leave the editor pointed back at cue 1 -- while a single press is
