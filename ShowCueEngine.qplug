@@ -55,7 +55,7 @@
 
 PluginInfo = {
   Name = "Show Control~CueEngine",
-  Version = "2.0.0",
+  Version = "2.1.0",
   Id = "com.yourcompany.showcontrol.cueengine",
   Description = "Live-show cue engine: up to 30 cues, each firing a reorderable, optionally-delayed sequence of actions (player triggers, UDP, named controls, wait, reusable action groups).",
   Author = "LAUPI PRODUCTION",
@@ -306,23 +306,19 @@ function GetControls(props)
 
   -- Timecode Show: a second, independent show driven by TC instead of GO/the
   -- cue grid -- see the "Timecode Show" page. Still uses the same Devices
-  -- and Action Groups as the Live Show. Always driven by the TC Input pin
-  -- below -- there is no internal software clock (see README): a Timer-
-  -- driven soft clock was removed because it can't hold frame-accurate
-  -- timing, which defeats the point of a TC-driven show.
+  -- and Action Groups as the Live Show. Driven by referencing a real Q-SYS
+  -- SMPTE LTC Reader component's "Timecode"/"Frame Rate (fps)" Named
+  -- Controls directly (Component.New(name)[...].EventHandler) -- the same
+  -- proven cross-component mechanism this plugin already uses for Media
+  -- Players, not a schematic pin on this component (an earlier build tried
+  -- that; Text-type UserPins may not render as real Designer pins at all --
+  -- see README's "Timecode Show" section).
+  add({ Name = "TcSourceComponent", ControlType = "Text", Count = 1 })
   add({ Name = "TcCurrentText", ControlType = "Text", Count = 1 })
   add({ Name = "TcFrameRate", ControlType = "Text", Count = 1 })
   add({ Name = "TcResetClockButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
   add({ Name = "TcRearmButton", ControlType = "Button", ButtonType = "Trigger", Count = 1 })
   add({ Name = "TcStatusText", ControlType = "Text", Count = 1 })
-  -- TC in / out -- schematic pins so another component (a real LTC/MTC
-  -- decoder, an external show-control system) can drive this plugin's
-  -- clock, or read it back out. Both are plain "HH:MM:SS:FF" strings; see
-  -- README for exactly what these pins can and can't do reliably. Never
-  -- placed in GetControlLayout (like ShowData) -- a pin needs no on-canvas
-  -- widget; UserPin/PinStyle alone puts it on the schematic block.
-  add({ Name = "TcInput", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Input" })
-  add({ Name = "TcOutput", ControlType = "Text", Count = 1, UserPin = true, PinStyle = "Output" })
 
   if maxTcCues > 0 then
     add({ Name = "TcCueButton", ControlType = "Button", ButtonType = "Trigger", Count = maxTcCues })
@@ -758,10 +754,11 @@ function GetControlLayout(props)
     ------------------------------------------------------------------------
     -- Page 5: a SECOND, independent show driven by timecode instead of GO/
     -- the cue grid -- still reads the same Devices and Action Groups as the
-    -- Live Show. Always driven by whatever arrives on the TC Input
-    -- schematic pin -- there is no software clock, so accuracy is entirely
-    -- the upstream TC source's. Only non-drop 24/25/30fps are offered. See
-    -- README's "Timecode Show" section for what feeds the pin.
+    -- Live Show. Driven by referencing a real SMPTE LTC Reader component's
+    -- Named Controls (see "TC Source Component" below) -- there is no
+    -- software clock, so accuracy is entirely that component's (and, in
+    -- turn, whatever real LTC audio is feeding it). Only non-drop
+    -- 24/25/30fps are offered. See README's "Timecode Show" section.
     ------------------------------------------------------------------------
     local W = 920
     local M = 16
@@ -769,13 +766,14 @@ function GetControlLayout(props)
     title("SHOW CUE ENGINE  ~  Timecode Show", M, 4, 836)
     local y = 60
 
-    card(M, y, W - 2 * M, 80, "TC TRANSPORT  (always driven by the TC Input pin -- see README)")
-    layout["TcCurrentText"] = { PrettyName = "Current TC", Style = "Text", Color = T.Text, Position = { 28, y + 18 }, Size = { 180, 26 } }
-    layout["TcFrameRate"] = { PrettyName = "Frame Rate (non-drop)", Style = "ComboBox", Color = T.Text, Position = { 220, y + 18 }, Size = { 80, 26 } }
-    layout["TcResetClockButton"] = { PrettyName = "Reset Clock to Zero", Style = "Button", ButtonStyle = "Trigger", Legend = "RESET CLOCK", Color = { 90, 98, 112 }, CornerRadius = 4, Position = { 320, y + 18 }, Size = { 140, 26 } }
-    layout["TcRearmButton"] = { PrettyName = "Rearm All TC Cues", Style = "Button", ButtonStyle = "Trigger", Legend = "REARM CUES", Color = { 90, 98, 112 }, CornerRadius = 4, Position = { 476, y + 18 }, Size = { 140, 26 } }
-    layout["TcStatusText"] = { PrettyName = "TC Status", Style = "Text", Color = T.Text, Position = { 28, y + 50 }, Size = { W - 2 * M - 28 - 14, 20 } }
-    y = y + 80 + 12
+    card(M, y, W - 2 * M, 108, "TC TRANSPORT  (reads a real SMPTE LTC Reader component -- see README)")
+    layout["TcSourceComponent"] = { PrettyName = "TC Source Component (e.g. a SMPTE LTC Reader)", Style = "ComboBox", Color = T.Text, Position = { 28, y + 18 }, Size = { 360, 26 } }
+    layout["TcCurrentText"] = { PrettyName = "Current TC", Style = "Text", Color = T.Text, Position = { 28, y + 50 }, Size = { 180, 24 } }
+    layout["TcFrameRate"] = { PrettyName = "Frame Rate (non-drop)", Style = "ComboBox", Color = T.Text, Position = { 220, y + 50 }, Size = { 80, 24 } }
+    layout["TcResetClockButton"] = { PrettyName = "Reset Clock to Zero", Style = "Button", ButtonStyle = "Trigger", Legend = "RESET CLOCK", Color = { 90, 98, 112 }, CornerRadius = 4, Position = { 320, y + 50 }, Size = { 140, 24 } }
+    layout["TcRearmButton"] = { PrettyName = "Rearm All TC Cues", Style = "Button", ButtonStyle = "Trigger", Legend = "REARM CUES", Color = { 90, 98, 112 }, CornerRadius = 4, Position = { 476, y + 50 }, Size = { 140, 24 } }
+    layout["TcStatusText"] = { PrettyName = "TC Status", Style = "Text", Color = T.Text, Position = { 28, y + 80 }, Size = { W - 2 * M - 28 - 14, 20 } }
+    y = y + 108 + 12
 
     if maxTcCues > 0 then
       local gridCols = 6
@@ -940,7 +938,7 @@ local EngagePanic, ClearPanic
 -- already used for Action Groups, so nothing here can cross-contaminate the
 -- Live Show's state machine.
 local TcFramesToString, TcStringToFrames, TcRecomputeAllTargets
-local TcApplyFrameRate, TcResetClock, TcRearmAllCues
+local TcApplyFrameRate, TcResetClock, TcRearmAllCues, TcAttachSource
 local EvaluateTcCues, RefreshTcCueButtonColor, LogTcCueFire
 local TcFireCueNow, TcDispatchCueActions, TcFinishCueFire, TcCancelAllPendingWaits
 local TcRefreshActionTargetChoices, TcRefreshActionControlChoices, TcRefreshVisibleActionChoices, TcRefreshActionValueEditor
@@ -991,7 +989,10 @@ local TcCues = {}
 local SelectedTcCueIndex = 1
 local TcCueLog = {}
 local TcFrameRate = 30      -- fps; only 24/25/30 offered -- no drop-frame (see README)
-local TcFrameCounter = 0    -- current TC, in total frames since 00:00:00:00 -- only ever written by the TcInput pin
+local TcFrameCounter = 0    -- current TC, in total frames since 00:00:00:00 -- only ever written by TcHandleSourceTime
+local TcSourceComponentName = "" -- "" = no TC Source Component selected (manual/bench-test only)
+local TC_SOURCE_TIME_CTRL = "Timecode"       -- SMPTE LTC Reader's Named Control for the decoded HH:MM:SS:FF string
+local TC_SOURCE_RATE_CTRL = "Frame Rate (fps)" -- SMPTE LTC Reader's Named Control for its configured frame rate
 
 local CONFIRM_WINDOW_MS = 2000
 local DEBOUNCE_MS = 150
@@ -1480,7 +1481,7 @@ BuildShowTable = function()
     actionGroups = actionGroupsOut,
     udpTargets = udpOut,
     globalCondition = { enabled = GlobalCondition.enabled, target = GlobalCondition.target, control = GlobalCondition.control, required = GlobalCondition.required },
-    tc = { frameRate = TcFrameRate, cues = tcCuesOut },
+    tc = { frameRate = TcFrameRate, sourceComponent = TcSourceComponentName, cues = tcCuesOut },
   }
 end
 
@@ -1612,10 +1613,13 @@ ApplyShowTable = function(data)
   end
 
   -- Timecode Show: only authored cue content + setup preferences (frame
-  -- rate, source) come from here -- the running clock position and fired
-  -- flags are never restored (see BuildShowTable's comment; TcResetClock/
-  -- TcRearmAllCues below always start a loaded show at a clean 00:00:00:00).
+  -- rate, TC Source Component) come from here -- the running clock position
+  -- and fired flags are never restored on their own (see BuildShowTable's
+  -- comment; TcResetClock/TcRearmAllCues below zero everything first) --
+  -- but re-attaching to a live TC Source Component immediately after pulls
+  -- in whatever that component currently reports, same as a fresh boot.
   local tcFrameRate = 30
+  local tcSourceComponent = ""
   if type(data.tc) == "table" then
     local tc = data.tc
     if type(tc.cues) == "table" then
@@ -1652,6 +1656,7 @@ ApplyShowTable = function(data)
     end
     local fr = tonumber(tc.frameRate)
     if fr == 24 or fr == 25 or fr == 30 then tcFrameRate = fr end
+    if type(tc.sourceComponent) == "string" then tcSourceComponent = tc.sourceComponent end
     -- tc.source (an older build's Internal/External toggle state) is
     -- deliberately ignored -- there's only one TC source now.
   end
@@ -1674,6 +1679,8 @@ ApplyShowTable = function(data)
   pcall(function() Controls.TcFrameRate.String = tostring(TcFrameRate) end)
   TcResetClock()
   TcRearmAllCues()
+  pcall(function() Controls.TcSourceComponent.String = tcSourceComponent end)
+  TcAttachSource(tcSourceComponent) -- re-syncs to the live Reader, overriding the zero TcResetClock just set
   TcRefreshSelectedCueChoices()
   SelectedTcCueIndex = 1
   PushSelectedTcCueToEditor()
@@ -2437,13 +2444,23 @@ end
 
 --=============================================================================
 -- Timecode Show: the clock itself
--- Always driven by the TcInput pin -- see README's "Timecode Show" section.
--- An earlier build also offered an Internal, Timer-driven soft clock; it
--- was removed because Q-SYS Lua's control-plane scheduler gives no
--- real-time guarantee, so a software tick can never be frame-accurate --
--- exactly what a TC-driven show can't tolerate. This plugin cannot decode
--- real LTC/MTC itself (that needs DSP, not Lua) -- accuracy is entirely
--- whatever real TC-reading device or component feeds the TcInput pin.
+-- Driven by referencing a real Q-SYS SMPTE LTC Reader component (see "TC
+-- Source Component" on the Timecode Show page) -- see README's "Timecode
+-- Show" section. An earlier build tried two other mechanisms first, both
+-- abandoned:
+--   1. An Internal, Timer-driven soft clock -- removed because Q-SYS Lua's
+--      control-plane scheduler gives no real-time guarantee, so a software
+--      tick can never be frame-accurate, which a TC-driven show can't
+--      tolerate. This plugin cannot decode real LTC/MTC itself (that needs
+--      DSP, not Lua), so it never could generate broadcast-grade TC anyway.
+--   2. A schematic "TC Input" pin (Text-typed) -- removed because it never
+--      appeared as a wireable pin in real Designer (confirmed by the user;
+--      root cause unconfirmed, but Text-typed UserPins are suspected not to
+--      render as real Designer pins at all).
+-- Cross-component Named Control access (Component.New(name)[ctrl]) is the
+-- SAME proven mechanism this plugin already uses to drive Media Players --
+-- it needs no pin, and reads a real Reader's already-decoded, DSP-accurate
+-- time directly, so accuracy is entirely that component's.
 --=============================================================================
 TcApplyFrameRate = function(fps)
   if fps ~= 24 and fps ~= 25 and fps ~= 30 then fps = 30 end
@@ -2455,10 +2472,7 @@ end
 TcResetClock = function()
   TcFrameCounter = 0
   local s = TcFramesToString(0, TcFrameRate)
-  pcall(function()
-    Controls.TcCurrentText.String = s
-    Controls.TcOutput.String = s
-  end)
+  pcall(function() Controls.TcCurrentText.String = s end)
   EvaluateTcCues() -- re-arms anything whose target is now ahead of 0 again
 end
 
@@ -2469,6 +2483,71 @@ TcRearmAllCues = function()
     if c.state == "fired" or c.state == "error" then c.state = "idle" end
     RefreshTcCueButtonColor(i)
   end
+end
+
+-- Fires on the SMPTE LTC Reader's "Timecode" Named Control changing --
+-- becomes CurrentTC immediately, the sole way the clock ever advances.
+-- Malformed/unparseable content is ignored outright (a Reader with no
+-- valid LTC signal locked may report something other than "HH:MM:SS:FF").
+-- Deliberately NOT gated on Loading: unlike this plugin's own persisted
+-- state (which never remembers clock position -- see README), reconnecting
+-- to a live Reader should immediately reflect its actual current time
+-- rather than freeze at a stale 00:00:00:00, and EvaluateTcCues() catching
+-- up on anything already due is the same ">= never silently skipped"
+-- guarantee the rest of this feature relies on.
+local function TcHandleSourceTime(ctl)
+  local frames = TcStringToFrames(ctl.String, TcFrameRate)
+  if not frames then return end
+  TcFrameCounter = frames
+  local s = TcFramesToString(frames, TcFrameRate)
+  pcall(function()
+    Controls.TcCurrentText.String = s
+    Controls.TcStatusText.String = "Receiving from " .. TcSourceComponentName
+  end)
+  EvaluateTcCues()
+end
+
+-- Fires on the Reader's "Frame Rate (fps)" Named Control changing -- keeps
+-- this plugin's frame math in lockstep with the Reader's actual configured
+-- rate instead of relying on the operator to match a dropdown by hand.
+local function TcHandleSourceRate(ctl)
+  local fps = tonumber(ctl.String) or tonumber(ctl.Value)
+  if (fps == 24 or fps == 25 or fps == 30) and fps ~= TcFrameRate then
+    TcApplyFrameRate(fps)
+    pcall(function() Controls.TcFrameRate.String = tostring(TcFrameRate) end)
+  end
+end
+
+-- Selecting a TC Source Component hooks its Timecode/Frame Rate controls
+-- directly (Component.New(name)[ctrl].EventHandler = ...) -- no schematic
+-- pin involved. An empty name (or one that fails to resolve) leaves the
+-- clock in manual/bench-test mode: RESET CLOCK and each TC cue's grid
+-- button (manual test-fire) still work, but nothing auto-advances.
+TcAttachSource = function(name)
+  TcSourceComponentName = name or ""
+  if TcSourceComponentName == "" then
+    pcall(function() Controls.TcStatusText.String = "No TC Source Component selected" end)
+    return
+  end
+  local comp = GetComponent(TcSourceComponentName)
+  if not comp then
+    pcall(function() Controls.TcStatusText.String = "TC Source Component not found: " .. TcSourceComponentName end)
+    return
+  end
+  local ok = pcall(function()
+    comp[TC_SOURCE_TIME_CTRL].EventHandler = TcHandleSourceTime
+    comp[TC_SOURCE_RATE_CTRL].EventHandler = TcHandleSourceRate
+  end)
+  if not ok then
+    pcall(function() Controls.TcStatusText.String = string.format("Component '%s' has no '%s' control", TcSourceComponentName, TC_SOURCE_TIME_CTRL) end)
+    return
+  end
+  pcall(function() Controls.TcStatusText.String = "Waiting for TC from " .. TcSourceComponentName end)
+  -- Pull whatever the Reader currently reports right away, rather than
+  -- waiting for its next change, so a rate/time already valid before this
+  -- plugin booted (or before the operator picked this Source) isn't missed.
+  pcall(function() TcHandleSourceRate(comp[TC_SOURCE_RATE_CTRL]) end)
+  pcall(function() TcHandleSourceTime(comp[TC_SOURCE_TIME_CTRL]) end)
 end
 
 --=============================================================================
@@ -3552,21 +3631,10 @@ Controls.TcRearmButton.EventHandler = function()
   TcRearmAllCues()
 end
 
--- TC in: whatever's on the pin becomes CurrentTC immediately -- the sole
--- way the clock ever advances. Malformed input is ignored outright (no
--- revert needed -- this is a pin, not something an operator edits).
-Controls.TcInput.EventHandler = function(ctl)
+Controls.TcSourceComponent.EventHandler = function(ctl)
   if Loading then return end
-  local frames = TcStringToFrames(ctl.String, TcFrameRate)
-  if not frames then return end
-  TcFrameCounter = frames
-  local s = TcFramesToString(frames, TcFrameRate)
-  pcall(function()
-    Controls.TcCurrentText.String = s
-    Controls.TcOutput.String = s
-    Controls.TcStatusText.String = "Receiving on TC Input pin"
-  end)
-  EvaluateTcCues()
+  TcAttachSource(ctl.String)
+  MarkDirty(); SaveShowData()
 end
 
 if MaxTcCues > 0 then
@@ -3790,7 +3858,7 @@ end
 Init = function()
   Loading = true
 
-  pcall(function() Controls.TcStatusText.String = "Waiting for TC Input pin" end)
+  TcAttachSource("") -- sets the initial "No TC Source Component selected" status; ApplyShowTable (below, if a show loads) re-attaches the persisted one
 
   local loaded = LoadShowData()
   if not loaded then
@@ -3819,6 +3887,7 @@ Init = function()
   for i = 1, MaxDevices do
     pcall(function() Controls.DeviceComponent[i].Choices = AllComponentNameList() end)
   end
+  pcall(function() Controls.TcSourceComponent.Choices = AllComponentNameList() end)
 
   RebuildComponentCache()
   for i = 1, NumUdp do OpenUdpSocket(i) end
