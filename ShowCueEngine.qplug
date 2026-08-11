@@ -55,7 +55,7 @@
 
 PluginInfo = {
   Name = "Show Control~CueEngine",
-  Version = "2.1.0",
+  Version = "2.1.1",
   Id = "com.yourcompany.showcontrol.cueengine",
   Description = "Live-show cue engine: up to 30 cues, each firing a reorderable, optionally-delayed sequence of actions (player triggers, UDP, named controls, wait, reusable action groups).",
   Author = "LAUPI PRODUCTION",
@@ -110,6 +110,15 @@ local Theme = {
   Played        = { 46, 49, 56 },    -- a superseded cue, dimmed well below idle
   CueIdle       = { 55, 60, 69 },    -- a cue button's placeholder color before Init() runs
   TextBoxBg     = { 20, 22, 26 },    -- log/notes/export TextBoxes -- an inset field within a card
+  -- A Style="TextBox" control's design-time Color does NOT set its text
+  -- color in real Designer (confirmed by the user -- a second, independent
+  -- confirmation after runtime .Color was already confirmed not to work
+  -- either; only Style="Text" respects Color). Since the text itself can't
+  -- be forced light, these boxes get a LIGHT background instead, so
+  -- whatever fixed (dark) color Q-SYS actually renders TextBox text in is
+  -- legible against it -- a deliberate light "paper" panel inside an
+  -- otherwise dark page, not a mistake.
+  TextBoxBgOnLight = { 235, 238, 242 },
 }
 
 --=============================================================================
@@ -434,9 +443,11 @@ function GetControlLayout(props)
   -- (Fill only exists on GroupBox graphics) -- call this at the SAME
   -- Position/Size as a TextBox layout entry (and set that entry's
   -- TextBoxStyle = "NoBackground") to give it a themed fill, the same way
-  -- card() gives its Controls a background.
-  local function textBoxBg(x, y, w, h)
-    graphics[#graphics + 1] = { Type = "GroupBox", Fill = T.TextBoxBg, StrokeColor = Border, StrokeWidth = 1, CornerRadius = 4, Position = { x, y }, Size = { w, h } }
+  -- card() gives its Controls a background. `fill` defaults to the normal
+  -- dark inset color; pass T.TextBoxBgOnLight for a TextBox whose actual
+  -- text color can't be controlled (see Theme.TextBoxBgOnLight's comment).
+  local function textBoxBg(x, y, w, h, fill)
+    graphics[#graphics + 1] = { Type = "GroupBox", Fill = fill or T.TextBoxBg, StrokeColor = Border, StrokeWidth = 1, CornerRadius = 4, Position = { x, y }, Size = { w, h } }
   end
 
   if currentPage == "Live Show" then
@@ -493,12 +504,12 @@ function GetControlLayout(props)
     local notesH = 90
     local notesHalfW = (W - 2 * M - 12) / 2
     card(M, notesY, notesHalfW, notesH, "CURRENT CUE NOTES")
-    textBoxBg(M + 14, notesY + 22, notesHalfW - 28, notesH - 36)
-    layout["CurrentCueNotesText"] = { PrettyName = "Current Cue Notes", Style = "TextBox", TextBoxStyle = "NoBackground", Color = T.Text, Position = { M + 14, notesY + 22 }, Size = { notesHalfW - 28, notesH - 36 } }
+    textBoxBg(M + 14, notesY + 22, notesHalfW - 28, notesH - 36, T.TextBoxBgOnLight)
+    layout["CurrentCueNotesText"] = { PrettyName = "Current Cue Notes", Style = "TextBox", TextBoxStyle = "NoBackground", Position = { M + 14, notesY + 22 }, Size = { notesHalfW - 28, notesH - 36 } }
     local notes2X = M + notesHalfW + 12
     card(notes2X, notesY, notesHalfW, notesH, "NEXT CUE NOTES")
-    textBoxBg(notes2X + 14, notesY + 22, notesHalfW - 28, notesH - 36)
-    layout["NextCueNotesText"] = { PrettyName = "Next Cue Notes", Style = "TextBox", TextBoxStyle = "NoBackground", Color = T.Text, Position = { notes2X + 14, notesY + 22 }, Size = { notesHalfW - 28, notesH - 36 } }
+    textBoxBg(notes2X + 14, notesY + 22, notesHalfW - 28, notesH - 36, T.TextBoxBgOnLight)
+    layout["NextCueNotesText"] = { PrettyName = "Next Cue Notes", Style = "TextBox", TextBoxStyle = "NoBackground", Position = { notes2X + 14, notesY + 22 }, Size = { notesHalfW - 28, notesH - 36 } }
 
     -- Cue grid (quick-fire) + activity log side-by-side ------------------------
     local gridCols = 6
@@ -528,8 +539,8 @@ function GetControlLayout(props)
     local logCardX = gridCardX + gridCardW + 12
     local logCardW = W - M - logCardX
     card(logCardX, gridCardY, logCardW, gridCardH, "ACTIVITY LOG")
-    textBoxBg(logCardX + 14, gridCardY + 30, logCardW - 28, gridCardH - 44)
-    layout["CueLogText"] = { PrettyName = "Cue Fire Log", Style = "TextBox", TextBoxStyle = "NoBackground", Color = T.Text, Position = { logCardX + 14, gridCardY + 30 }, Size = { logCardW - 28, gridCardH - 44 } }
+    textBoxBg(logCardX + 14, gridCardY + 30, logCardW - 28, gridCardH - 44, T.TextBoxBgOnLight)
+    layout["CueLogText"] = { PrettyName = "Cue Fire Log", Style = "TextBox", TextBoxStyle = "NoBackground", Position = { logCardX + 14, gridCardY + 30 }, Size = { logCardW - 28, gridCardH - 44 } }
 
     local pageH = gridCardY + gridCardH + M
     pageBackground(W, pageH)
@@ -678,11 +689,11 @@ function GetControlLayout(props)
     -- Export / Import -------------------------------------------------------------
     card(M, y, W - 2 * M, 172, "EXPORT / IMPORT SHOW (copy-paste JSON)")
     layout["ExportButton"] = { PrettyName = "Export Show", Style = "Button", ButtonStyle = "Trigger", Legend = "Export", Color = Accent, CornerRadius = 4, Position = { 28, y + 18 }, Size = { 100, 22 } }
-    textBoxBg(28, y + 46, 320, 100)
-    layout["ExportData"] = { PrettyName = "Export JSON (copy this)", Style = "TextBox", TextBoxStyle = "NoBackground", Color = T.Text, Position = { 28, y + 46 }, Size = { 320, 100 } }
+    textBoxBg(28, y + 46, 320, 100, T.TextBoxBgOnLight)
+    layout["ExportData"] = { PrettyName = "Export JSON (copy this)", Style = "TextBox", TextBoxStyle = "NoBackground", Position = { 28, y + 46 }, Size = { 320, 100 } }
     layout["ImportButton"] = { PrettyName = "Import Show", Style = "Button", ButtonStyle = "Trigger", Legend = "Import", Color = Accent, CornerRadius = 4, Position = { 364, y + 18 }, Size = { 100, 22 } }
-    textBoxBg(364, y + 46, 320, 100)
-    layout["ImportData"] = { PrettyName = "Import JSON (paste here)", Style = "TextBox", TextBoxStyle = "NoBackground", Color = T.Text, Position = { 364, y + 46 }, Size = { 320, 100 } }
+    textBoxBg(364, y + 46, 320, 100, T.TextBoxBgOnLight)
+    layout["ImportData"] = { PrettyName = "Import JSON (paste here)", Style = "TextBox", TextBoxStyle = "NoBackground", Position = { 364, y + 46 }, Size = { 320, 100 } }
     layout["ImportErrorText"] = { PrettyName = "Import Error", Style = "Text", Color = T.Text, Position = { 364, y + 150 }, Size = { 320, 18 } }
     graphics[#graphics + 1] = {
       Type = "Text",
@@ -803,8 +814,8 @@ function GetControlLayout(props)
       local logCardX = gridCardX + gridCardW + 12
       local logCardW = W - M - logCardX
       card(logCardX, gridCardY, logCardW, gridCardH, "TC ACTIVITY LOG")
-      textBoxBg(logCardX + 14, gridCardY + 30, logCardW - 28, gridCardH - 44)
-      layout["TcCueLogText"] = { PrettyName = "TC Cue Fire Log", Style = "TextBox", TextBoxStyle = "NoBackground", Color = T.Text, Position = { logCardX + 14, gridCardY + 30 }, Size = { logCardW - 28, gridCardH - 44 } }
+      textBoxBg(logCardX + 14, gridCardY + 30, logCardW - 28, gridCardH - 44, T.TextBoxBgOnLight)
+      layout["TcCueLogText"] = { PrettyName = "TC Cue Fire Log", Style = "TextBox", TextBoxStyle = "NoBackground", Position = { logCardX + 14, gridCardY + 30 }, Size = { logCardW - 28, gridCardH - 44 } }
 
       y = y + gridCardH + 12
 
@@ -3916,13 +3927,18 @@ Init = function()
 
   pcall(function() Controls.UnsavedLed.Color = StateColors.neutral end)
 
-  -- NOTE: an earlier build tried setting TextBoxes' `.Color` here at
-  -- RUNTIME to pair their text with the textBoxBg() Fill rectangle behind
-  -- them. Confirmed in real Designer NOT to repaint the text -- removed.
-  -- Text color for every themed field is set the same way every button's
-  -- color already is: as a `Color = ...` field directly in the layout
-  -- table GetControlLayout returns, at design time, alongside the Fill
-  -- rectangle it's paired with -- see textBoxBg() and its call sites above.
+  -- NOTE on TextBox text color, confirmed twice over in real Designer: (1)
+  -- an earlier build tried setting TextBoxes' `.Color` at RUNTIME -- does
+  -- NOT repaint the text. (2) A later build set `Color = ...` at DESIGN
+  -- TIME instead (the mechanism every button's face color already relies
+  -- on, and which DOES work for plain Style="Text" fields) -- this ALSO
+  -- does not repaint a Style="TextBox" control's text. Its color appears
+  -- fixed by Q-SYS regardless of either mechanism. The six TextBoxes this
+  -- affects (Cue Notes x2, Activity Log x2, Export/Import JSON) are given a
+  -- LIGHT background instead (Theme.TextBoxBgOnLight, see textBoxBg() call
+  -- sites above) so Q-SYS's own fixed text color reads clearly against it,
+  -- rather than continuing to fight a property that provably does nothing
+  -- here.
 
   StartPingHeartbeat()
 

@@ -420,19 +420,40 @@ Devices page) are a special case: Q-SYS's `Text`/`TextBox` control styles
 have **no background-fill property at all** — `Fill` only exists on
 card/page `GroupBox` graphics. So each of these is given `TextBoxStyle =
 "NoBackground"` where applicable (makes a TextBox transparent) plus its own
-small themed rectangle (`Theme.TextBoxBg`) drawn behind it at the identical
-position — the same mechanism `card()` uses for its own background, not a
-new technique.
+small themed rectangle drawn behind it at the identical position — the
+same mechanism `card()` uses for its own background, not a new technique.
 
-Each field's *text* color is set the same proven way every button's color
-already is: as a `Color = {r,g,b}` entry directly in the layout table
-`GetControlLayout` returns (`Theme.Text`, a light near-white), right
-alongside its background rectangle — so the two can never end up
-mismatched. **An earlier build tried setting text color at *runtime*
-instead** (`Controls.X.Color = ...` in `Init()`), which is confirmed *not*
-to repaint a `TextBox`'s text in real Designer — that attempt has been
-removed. Design-time `Color` is the same mechanism already relied on
-throughout this whole plugin (every button's face color works this way).
+For most of these fields (status/show-strip text, every Device/UDP Target
+field, TC transport fields), the *text* color is set the same proven way
+every button's color already is: a `Color = {r,g,b}` entry directly in the
+layout table `GetControlLayout` returns (`Theme.Text`, a light near-white),
+right alongside its background rectangle (`Theme.TextBoxBg`, dark). This
+works because these are all **`Style = "Text"`** fields.
+
+**Six fields are different: Cue Log, TC Cue Log, Current/Next Cue Notes,
+and Export/Import JSON are `Style = "TextBox"`**, not `"Text"` (they need
+to support scrolling/selecting/pasting, which plain `Text` doesn't). For
+`TextBox` specifically, `Color` has been confirmed **twice**, independently,
+not to affect the actual rendered text in real Designer: an earlier build
+tried setting it at *runtime* (`Controls.X.Color = ...` in `Init()`) —
+confirmed not to work; a later build moved to *design-time* `Color` in the
+layout table instead (the exact mechanism that works for every button and
+every `Style = "Text"` field) — **also confirmed not to work**, this time
+by the user directly, who reported these six boxes as the only remaining
+black-on-dark text in the plugin. Q-SYS appears to render a `TextBox`'s
+text in a fixed color regardless of either mechanism, and this plugin has
+no further lever to pull on that front.
+
+Rather than keep fighting a property that provably does nothing, these six
+fields' background rectangles use `Theme.TextBoxBgOnLight` (a light,
+near-white fill) instead of the normal dark `Theme.TextBoxBg` — deliberately
+different from the rest of the dark-themed plugin, so that whatever fixed
+color Q-SYS actually draws the text in (almost certainly dark, matching the
+report) reads clearly against it. They carry no `Color` field at all, since
+one demonstrably does nothing here and an untested future Designer version
+honoring it against a now-light background would risk the opposite failure
+(light-on-light). This is a deliberate design choice working *with* a
+confirmed platform constraint, not an oversight.
 
 Every card's heading (e.g. "SHOW", "STATUS", "CUES (tap to fire)") is drawn
 as its **own `Text` graphic** with an explicit `Theme.Text` color,
@@ -785,22 +806,27 @@ specified:
    source is 29.97 non-drop, 30fps here is the closest fit; a true
    drop-frame source will read up to ~3.6 seconds "ahead" of real time
    after an hour, since dropped frame numbers are never accounted for.
-8. **TextBox/Text runtime `.Color` does not repaint text — confirmed, not
-   just suspected**: `Style = "Text"`/`"TextBox"` controls have no
-   background-fill property at all (`Fill` exists only on `GroupBox`
+8. **`Style = "TextBox"` text color cannot be set at all — confirmed twice
+   over, not just suspected**: `Style = "Text"`/`"TextBox"` controls have
+   no background-fill property at all (`Fill` exists only on `GroupBox`
    graphics), hence the themed rectangle-behind-the-field approach in
-   "Colors and theming". An earlier build additionally tried setting
-   `Controls.X.Color` on these fields at *runtime* (in `Init()`) to color
-   their text, flagged at the time as unconfirmed by documentation — **this
-   was tested in real Designer and confirmed not to work**: the text stayed
-   its default color regardless. That runtime attempt has been removed.
-   Text color is now set the same proven way every button's face color
-   already is — as `Color = {r,g,b}` directly in the layout table
-   `GetControlLayout` returns, at design time — which carries much higher
-   confidence since it's the exact mechanism the whole rest of this plugin
-   already depends on, but it has **not itself** been visually re-confirmed
-   in Designer yet (only the now-disproven runtime path was actually
-   tested) — verify it before a live show.
+   "Colors and theming". Two separate mechanisms were tried for the actual
+   *text* color and both failed in real Designer: (1) an earlier build set
+   `Controls.X.Color` at *runtime* (in `Init()`) — confirmed not to work,
+   text stayed its default color regardless. (2) A later build moved to
+   `Color = {r,g,b}` directly in the layout table at *design time* instead
+   — the same mechanism every button's face color and every `Style =
+   "Text"` field's color already rely on successfully — but for `Style =
+   "TextBox"` specifically, **this was also confirmed not to work**, this
+   time by the user directly testing it, who reported the six `TextBox`
+   fields (Cue Log, TC Cue Log, Current/Next Cue Notes, Export/Import
+   JSON) as the only remaining black-on-dark text in the plugin. Design-time
+   `Color` continues to work fine for every `Style = "Text"` field (status
+   text, device/UDP fields, etc.) — the failure is specific to `Style =
+   "TextBox"`. Since neither mechanism works, those six fields now use a
+   **light background** (`Theme.TextBoxBgOnLight`) instead of fighting the
+   text color further, trusting whatever fixed color Q-SYS actually renders
+   `TextBox` text in to read clearly against it.
 9. **Raster logo (`Type = "Image"`)**: PNG/JPEG base64 support (now used by
    the shipped default LAUPI PRODUCTION logo, a 1500x1500 PNG) is built
    from documented syntax (`{ Type = "Image", Image = base64string,
@@ -886,14 +912,20 @@ so their color is actually controllable; and a couple of design-time
 transport button colors (`GoButton`, `ResetShowButton`) are checked against
 their expected values to confirm they still resolve correctly now that
 they're derived from the single `Theme` table instead of two side-by-side
-ones. The text-field background/color workaround is checked too:
-`CueLogText` is confirmed to carry `TextBoxStyle = "NoBackground"` and to
-have a themed GroupBox rectangle (`Theme.TextBoxBg`) at its exact position,
-and its design-time `Color` field is confirmed to be `Theme.Text` — same
-check repeated for `StatusText`/`ShowNameText` (Live Show page) and
-`DeviceName 1`/`UdpTargetName 1` (Devices page) as a representative
-spot-check of the fields extended to match the user's report that runtime
-`.Color` left these boxes' text unreadable against a dark background.
+ones. The text-field background/color workaround is checked too, split by
+which mechanism each field type actually uses: `CueLogText` (a `Style =
+"TextBox"` field) is confirmed to carry `TextBoxStyle = "NoBackground"`,
+to have a themed GroupBox rectangle at its exact position using the LIGHT
+`Theme.TextBoxBgOnLight` fill, and to carry **no** `Color` field at all
+(confirmed `nil`) — since design-time `Color` is confirmed not to affect a
+`TextBox`'s text either. `StatusText`/`ShowNameText` (Live Show page) and
+`DeviceName 1`/`UdpTargetName 1` (Devices page) — all `Style = "Text"`
+fields, where design-time `Color` does work — are confirmed to still carry
+`Color = Theme.Text` as before, as a representative spot-check of the
+fields extended to match the user's original report that runtime `.Color`
+left these boxes' text unreadable against a dark background, and later,
+that design-time `Color` on the `TextBox` fields specifically still didn't
+fix it.
 
 The Timecode Show is checked end-to-end through a mocked SMPTE LTC Reader
 component (Named Controls `Timecode` and `Frame Rate (fps)`, matching a
